@@ -3,18 +3,18 @@ import re
 from pathlib import Path
 import logging
 
-# Настройка логирования
+# Logging setup
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Определяем базовую директорию проекта
+# Define project base directory
 BASE_DIR = Path(__file__).parent
 
 def read_lean_file(filepath: Path) -> str:
-    """Читает содержимое Lean файла."""
+    """Reads the contents of a Lean file."""
     logger.info(f"Reading Lean file: {filepath}")
     try:
         with filepath.open('r', encoding='utf-8') as f:
@@ -28,20 +28,20 @@ def read_lean_file(filepath: Path) -> str:
 
 def process_lean_theorems(lean_content: str) -> list[dict]:
     """
-    Парсит Lean файл и извлекает утверждения теорем.
-    Возвращает список словарей с информацией о теоремах.
+    Parses Lean file and extracts theorem statements.
+    Returns a list of dictionaries with theorem information.
     """
     logger.info("Processing theorems from Lean content.")
     theorems = []
 
-    # Регулярное выражение для захвата всей декларации
+    # Regular expression to capture the entire declaration
     theorem_blocks_pattern = re.compile(
-        r'(?m)^'  # Начало строки (multiline mode)
-        r'(?P<full_statement>'  # Группа 'full_statement' захватывает всю декларацию
-        r'(?:theorem|lemma|def|example|instance|abbrev)\s+'  # Ключевое слово декларации
-        r'(?P<name>[a-zA-Z0-9_.]+)\s*'  # Имя декларации (группа 'name')
-        r'.*?)'  # Нежадный захват любого содержимого до следующей декларации или конца файла
-        r'(?=\n*(?:theorem|lemma|def|example|instance|abbrev)|\Z)',  # Lookahead: до следующей декларации или конца файла
+        r'(?m)^'  # Start of line (multiline mode)
+        r'(?P<full_statement>'  # 'full_statement' group captures the entire declaration
+        r'(?:theorem|lemma|def|example|instance|abbrev)\s+'  # Declaration keyword
+        r'(?P<name>[a-zA-Z0-9_.]+)\s*'  # Declaration name (group 'name')
+        r'.*?)'  # Non-greedy capture of any content until next declaration or end of file
+        r'(?=\n*(?:theorem|lemma|def|example|instance|abbrev)|\Z)',  # Lookahead: until next declaration or end of file
         re.DOTALL
     )
 
@@ -49,17 +49,17 @@ def process_lean_theorems(lean_content: str) -> list[dict]:
         full_statement = match.group('full_statement').strip()
         name = match.group('name')
 
-        # Проверяем наличие решения между begin и end
+        # Check for solution between begin and end
         begin_end_pattern = re.compile(r'begin\s*(.*?)\s*end', re.DOTALL)
         begin_end_match = begin_end_pattern.search(full_statement)
         
         is_solved = False
         if begin_end_match:
             proof_content = begin_end_match.group(1).strip()
-            # Если между begin и end есть что-то кроме пустого пространства и это не sorry
+            # If there is something between begin and end besides empty space and it's not sorry
             if proof_content and 'sorry' not in proof_content:
                 is_solved = True
-                # Заменяем решение на sorry
+                # Replace solution with sorry
                 full_statement = begin_end_pattern.sub('begin\n  sorry\nend', full_statement)
 
         theorems.append({
@@ -72,18 +72,18 @@ def process_lean_theorems(lean_content: str) -> list[dict]:
     return theorems
 
 def main():
-    # Используем относительные пути относительно BASE_DIR
+    # Use relative paths relative to BASE_DIR
     input_file = BASE_DIR / "miniF2F" / "lean" / "src" / "valid.lean"
     output_file = BASE_DIR / "valid.json"
 
     try:
-        # Читаем содержимое файла
+        # Read file contents
         lean_content = read_lean_file(input_file)
         
-        # Обрабатываем теоремы
+        # Process theorems
         theorems = process_lean_theorems(lean_content)
         
-        # Сохраняем результат в JSON
+        # Save result to JSON
         with output_file.open('w', encoding='utf-8') as f:
             json.dump(theorems, f, indent=2, ensure_ascii=False)
         

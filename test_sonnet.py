@@ -10,43 +10,43 @@ from pathlib import Path
 from openai import OpenAI
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
-# --- Константы и конфигурация по умолчанию ---
-# Путь к исполняемому файлу Lean 4. Убедитесь, что 'lean' доступен в PATH,
-# или укажите полный путь, например, '/opt/lean4/bin/lean'
+# --- Constants and default configuration ---
+# Path to Lean 4 executable. Make sure 'lean' is available in PATH,
+# or specify the full path, e.g., '/opt/lean4/bin/lean'
 LEAN_EXECUTABLE_PATH = "lean"
-LEAN_VERIFICATION_TIMEOUT = 300  # Таймаут для верификации Lean в секундах (5 минут)
+LEAN_VERIFICATION_TIMEOUT = 300  # Timeout for Lean verification in seconds (5 minutes)
 
-# API-ключ OpenRouter берется из переменной окружения
+# OpenRouter API key is taken from environment variable
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_NAME = "anthropic/claude-sonnet-4" # Модель по умолчанию
+MODEL_NAME = "anthropic/claude-sonnet-4" # Default model
 
-# Директории для выходных файлов и временных данных
+# Directories for output files and temporary data
 BASE_DIR = Path(__file__).parent
 LOG_DIR = BASE_DIR / "log"
 TEMP_DIR = BASE_DIR / "tmp"
 MICRO_SUBSET_FILE = BASE_DIR / "micro_subset.txt"
 
-# Путь к файлу valid.json по умолчанию
+# Default path to valid.json file
 VALID_JSON_PATH_DEFAULT = BASE_DIR / "valid.json"
 
-# Общее количество задач для микросабсета по умолчанию
-MICRO_SUBSET_SIZE_DEFAULT = 20
+# Default total number of tasks for micro-subset
+MICRO_SUBSET_SIZE_DEFAULT = 10
 
-# --- Настройка логирования ---
+# --- Logging setup ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(LOG_DIR / "llm_requests.log"),
-        logging.StreamHandler()  # Вывод также в консоль
+        logging.StreamHandler()  # Also output to console
     ]
 )
 logger = logging.getLogger(__name__)
 
-# --- Инициализация клиента OpenRouter ---
+# --- OpenRouter client initialization ---
 try:
     if not OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY environment variable not set. Please set it before running the script.")
@@ -57,12 +57,12 @@ try:
     )
 except ValueError as e:
     logger.critical(e)
-    exit(1) # Завершаем выполнение, если API-ключ не установлен
+    exit(1) # Exit if API key is not set
 
-# --- Вспомогательные функции ---
+# --- Helper functions ---
 
 def read_json_file(filepath: Path) -> list[dict]:
-    """Читает содержимое JSON файла с теоремами."""
+    """Reads the contents of a JSON file with theorems."""
     logger.info(f"Reading JSON file: {filepath}")
     try:
         with filepath.open('r', encoding='utf-8') as f:
@@ -76,7 +76,7 @@ def read_json_file(filepath: Path) -> list[dict]:
 
 def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -> list[dict]:
     """
-    Выбирает микросабсет задач, сохраняя соотношение решенных/нерешенных задач.
+    Selects a micro-subset of tasks while preserving the ratio of solved/unsolved tasks.
     """
     solved_theorems = [t for t in all_theorems if t['is_solved']]
     unsolved_theorems = [t for t in all_theorems if not t['is_solved']]
@@ -89,7 +89,7 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
         logger.warning("No theorems found to select from.")
         return []
 
-    # Рассчитываем целевое количество задач для каждой категории
+    # Calculate target number of tasks for each category
     if total_solved > 0:
         num_solved_in_subset = round(subset_size * (total_solved / total_all))
     else:
@@ -101,14 +101,14 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     logger.info(f"  Total solved theorems: {total_solved}, Target for subset: {num_solved_in_subset}")
     logger.info(f"  Total unsolved theorems: {total_unsolved}, Target for subset: {num_unsolved_in_subset}")
 
-    # Случайный выбор из каждой категории
+    # Random selection from each category
     selected_solved = random.sample(solved_theorems, min(num_solved_in_subset, total_solved))
     selected_unsolved = random.sample(unsolved_theorems, min(num_unsolved_in_subset, total_unsolved))
     
     micro_subset = selected_solved + selected_unsolved
-    random.shuffle(micro_subset)  # Перемешиваем для случайного порядка
+    random.shuffle(micro_subset)  # Shuffle for random order
 
-    # Сохраняем выбранные задачи в файл
+    # Save selected tasks to file
     MICRO_SUBSET_FILE.parent.mkdir(parents=True, exist_ok=True)
     with MICRO_SUBSET_FILE.open('w', encoding='utf-8') as f:
         f.write(f"Micro-subset of {len(micro_subset)} tasks selected from {len(all_theorems)} total:\n")
@@ -122,18 +122,28 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
 
 def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool:
     """
-    Создает временный Lean файл с сгенерированным доказательством
-    и проверяет его с помощью Lean.
+    Creates a temporary Lean file with the generated proof
+    and verifies it using Lean.
     """
     logger.info(f"Attempting Lean verification.")
 
-    # Создаем полную теорему с сгенерированным доказательством
+    # Check that the proof is not empty
+    if not generated_proof_body.strip():
+        logger.warning("  ❌ Empty proof body provided.")
+        return False
+
+    # Check for begin/end in the proof
+    if not re.search(r'begin\s+.*\s+end', generated_proof_body, re.DOTALL | re.IGNORECASE):
+        logger.warning("  ❌ Proof body must be wrapped in begin/end block.")
+        return False
+
+    # Create complete theorem with generated proof
     full_lean_code = theorem_statement.replace("sorry", generated_proof_body, 1)
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     temp_file_path = TEMP_DIR / f"temp_proof_{time.time_ns()}.lean"
 
-    # Добавляем необходимые импорты для успешной компиляции Lean файла
+    # Add necessary imports for successful Lean file compilation
     lean_imports = """
 import minif2f_import
 
@@ -149,7 +159,7 @@ open_locale rat
             f.write(lean_imports)
             f.write(full_lean_code)
 
-        # Добавляем путь к директории с исходниками Lean
+        # Add path to Lean source directory
         lean_source_path = BASE_DIR / "miniF2F" / "lean" / "src"
         process = subprocess.run(
             [LEAN_EXECUTABLE_PATH, "-L", str(lean_source_path), str(temp_file_path)],
@@ -161,12 +171,12 @@ open_locale rat
 
         output = process.stdout + process.stderr
         
-        # Логируем полный вывод Lean для отладки
+        # Log full Lean output for debugging
         logger.debug(f"Full Lean output for {temp_file_path.name}:\n{output}")
 
         if "error:" in output.lower():
             logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported errors.")
-            # Извлекаем и логируем только строки с ошибками
+            # Extract and log only error lines
             error_lines = [line for line in output.splitlines() if "error:" in line.lower()]
             if error_lines:
                 logger.warning("  Lean errors:")
@@ -176,6 +186,21 @@ open_locale rat
         
         if "warning: declaration" in output.lower() and "uses sorry" in output.lower():
             logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Generated proof still uses 'sorry'.")
+            return False
+
+        # Check that there are no warnings about unused variables or other issues
+        if "warning:" in output.lower():
+            logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported warnings.")
+            warning_lines = [line for line in output.splitlines() if "warning:" in line.lower()]
+            if warning_lines:
+                logger.warning("  Lean warnings:")
+                for warning in warning_lines:
+                    logger.warning(f"    {warning}")
+            return False
+
+        # Check that output contains confirmation of successful compilation
+        if not any(line.strip().endswith("goals accomplished") for line in output.splitlines()):
+            logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: No confirmation of successful proof.")
             return False
 
         logger.info(f"  ✅ Verification successful for {theorem_statement.splitlines()[0]}.")
@@ -196,21 +221,21 @@ open_locale rat
 
 def extract_proof_body(llm_response_content: str) -> str | None:
     """
-    Извлекает тело доказательства из ответа LLM.
-    Приоритизирует блоки кода в Markdown, затем обычные блоки begin...end.
+    Extracts the proof body from LLM response.
+    Prioritizes code blocks in Markdown, then plain begin...end blocks.
     """
     # First try to find Lean code in markdown blocks
     match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
     if match:
         content = match.group(1).strip()
-        # If the content has begin/end, extract just that part
+        # If content contains begin/end, extract only that part
         begin_match = re.search(r'begin\s*(.*?)\s*end', content, re.DOTALL | re.IGNORECASE)
         if begin_match:
             logger.info("  Extracted proof body from Lean markdown block with begin/end.")
             return begin_match.group(1).strip()
-        # Otherwise return the whole content
-        logger.info("  Extracted proof body from Lean markdown block.")
-        return content
+        # If no begin/end, return None
+        logger.warning("  No begin/end block found in Lean markdown block.")
+        return None
 
     # Then try to find begin/end blocks in plain text
     match = re.search(r'begin\s*(.*?)\s*end', llm_response_content, re.DOTALL | re.IGNORECASE)
@@ -224,7 +249,7 @@ def extract_proof_body(llm_response_content: str) -> str | None:
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5),
        before_sleep=before_sleep_log(logger, logging.WARNING))
 def _call_llm_with_retry(messages: list[dict], model_name: str, extra_headers: dict, max_tokens: int, temperature: float):
-    """Вспомогательная функция для вызова LLM с логикой повторных попыток."""
+    """Helper function for calling LLM with retry logic."""
     return client.chat.completions.create(
         extra_headers=extra_headers,
         model=model_name,
@@ -235,28 +260,28 @@ def _call_llm_with_retry(messages: list[dict], model_name: str, extra_headers: d
 
 def generate_and_verify_proof(theorem: dict) -> bool:
     """
-    Отправляет запрос к LLM для генерации доказательства и проверяет его.
+    Sends a request to LLM to generate a proof and verifies it.
     """
     logger.info(f"\n--- Processing Theorem: {theorem['name']} ---")
     logger.info(f"Original statement (first 200 chars):\n{theorem['statement'][:200]}...")
 
     try:
         system_prompt = (
-            "Ты - высококвалифицированный Lean 4 доказыватель теорем. "
-            "Твоя задача - генерировать валидные, формальные доказательства для математических теорем в Lean 4. "
-            "Ты должен предоставить только Lean-код, который полностью доказывает теорему, "
-            "заполняя блок `begin ... end` без использования `sorry`. "
-            "Твой ответ должен содержать только Lean-код внутри блока `begin ... end` "
-            "(предпочтительно обернутый в markdown-блок с указанием языка `lean`, например, ```lean ... ```)."
-            "Не включай никаких дополнительных объяснений, комментариев, введения или заключения."
+            "You are a highly qualified Lean 4 theorem prover. "
+            "Your task is to generate valid, formal proofs for mathematical theorems in Lean 4. "
+            "You must provide only Lean code that completely proves the theorem, "
+            "filling the `begin ... end` block without using `sorry`. "
+            "Your response should contain only Lean code inside the `begin ... end` block "
+            "(preferably wrapped in a markdown block with language specification `lean`, e.g., ```lean ... ```)."
+            "Do not include any additional explanations, comments, introductions, or conclusions."
         )
 
         user_prompt = (
-            f"Докажи следующую теорему на Lean 4. Заполни блок `begin ... end` без использования `sorry`. "
-            f"Убедись, что доказательство является полным и корректным Lean-кодом.\n\n"
+            f"Prove the following theorem in Lean 4. Fill the `begin ... end` block without using `sorry`. "
+            f"Make sure the proof is complete and correct Lean code.\n\n"
             f"```lean\n{theorem['statement']}\n```\n\n"
-            f"Твой ответ должен быть только содержимым блока `begin ... end`,"
-            f"обернутым в Lean-кодблок (```lean ... ```)."
+            f"Your response should be only the contents of the `begin ... end` block,"
+            f"wrapped in a Lean code block (```lean ... ```)."
         )
 
         messages = [
@@ -293,7 +318,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
         logger.error(f"  An error occurred during LLM interaction for {theorem['name']}: {e}")
         return False
 
-# --- Основная логика ---
+# --- Main logic ---
 def main():
     global MODEL_NAME
 
