@@ -28,11 +28,11 @@ LOG_DIR = BASE_DIR / "log"
 TEMP_DIR = BASE_DIR / "tmp"
 MICRO_SUBSET_FILE = BASE_DIR / "micro_subset.txt"
 
-# Путь к файлу valid.lean по умолчанию (относительно BASE_DIR)
-VALID_LEAN_PATH_DEFAULT = BASE_DIR / "miniF2F" / "lean" / "src" / "valid.lean"
+# Путь к файлу valid.json по умолчанию
+VALID_JSON_PATH_DEFAULT = BASE_DIR / "valid.json"
 
 # Общее количество задач для микросабсета по умолчанию
-MICRO_SUBSET_SIZE_DEFAULT = 20
+MICRO_SUBSET_SIZE_DEFAULT = 5
 
 # --- Настройка логирования ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -61,12 +61,12 @@ except ValueError as e:
 
 # --- Вспомогательные функции ---
 
-def read_lean_file(filepath: Path) -> str:
-    """Читает содержимое Lean файла."""
-    logger.info(f"Reading Lean file: {filepath}")
+def read_json_file(filepath: Path) -> list[dict]:
+    """Читает содержимое JSON файла с теоремами."""
+    logger.info(f"Reading JSON file: {filepath}")
     try:
         with filepath.open('r', encoding='utf-8') as f:
-            return f.read()
+            return json.load(f)
     except FileNotFoundError:
         logger.error(f"Error: File not found at {filepath}")
         raise
@@ -74,49 +74,12 @@ def read_lean_file(filepath: Path) -> str:
         logger.error(f"Error reading file {filepath}: {e}")
         raise
 
-def parse_lean_theorems(lean_content: str) -> list[dict]:
-    """
-    Парсит Lean файл и извлекает утверждения теорем.
-    Возвращает список словарей: [{'name': '...', 'statement': '...', 'has_sorry': True/False}]
-    Более устойчивое регулярное выражение для захвата полных деклараций.
-    """
-    logger.info("Parsing theorems from Lean content.")
-    theorems = []
-
-    # Регулярное выражение для захвата всей декларации (theorem, lemma, def, example и т.д.)
-    # от начала строки до следующей такой же декларации или конца файла.
-    theorem_blocks_pattern = re.compile(
-        r'(?m)^'  # Начало строки (multiline mode)
-        r'(?P<full_statement>'  # Группа 'full_statement' захватывает всю декларацию
-        r'(?:theorem|lemma|def|example|instance|abbrev)\s+'  # Ключевое слово декларации
-        r'(?P<name>[a-zA-Z0-9_.]+)\s*'  # Имя декларации (группа 'name')
-        r'.*?)'  # Нежадный захват любого содержимого до следующей декларации или конца файла
-        r'(?=\n*(?:theorem|lemma|def|example|instance|abbrev)|\Z)',  # Lookahead: до следующей декларации или конца файла
-        re.DOTALL
-    )
-
-    for match in theorem_blocks_pattern.finditer(lean_content):
-        full_statement = match.group('full_statement').strip()
-        name = match.group('name')
-
-        # Проверяем наличие 'sorry' во всем блоке декларации
-        has_sorry = 'sorry' in full_statement
-
-        theorems.append({
-            'name': name,
-            'statement': full_statement,
-            'has_sorry': has_sorry
-        })
-
-    logger.info(f"Found {len(theorems)} theorems in total.")
-    return theorems
-
 def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -> list[dict]:
     """
     Выбирает микросабсет задач, сохраняя соотношение решенных/нерешенных задач.
     """
-    solved_theorems = [t for t in all_theorems if not t['has_sorry']]
-    unsolved_theorems = [t for t in all_theorems if t['has_sorry']]
+    solved_theorems = [t for t in all_theorems if t['is_solved']]
+    unsolved_theorems = [t for t in all_theorems if not t['is_solved']]
 
     total_solved = len(solved_theorems)
     total_unsolved = len(unsolved_theorems)
@@ -152,7 +115,7 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
         f.write(f"  Solved tasks: {len(selected_solved)}\n")
         f.write(f"  Unsolved tasks: {len(selected_unsolved)}\n\n")
         for theorem in micro_subset:
-            f.write(f"- {theorem['name']} (Has sorry: {theorem['has_sorry']})\n")
+            f.write(f"- {theorem['name']} (Is solved: {theorem['is_solved']})\n")
     logger.info(f"Micro-subset details saved to {MICRO_SUBSET_FILE}")
     
     return micro_subset
@@ -165,17 +128,12 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
     logger.info(f"Attempting Lean verification.")
 
     # Создаем полную теорему с сгенерированным доказательством
-    # Заменяем sorry в оригинальном утверждении на сгенерированное доказательство.
-    # Важно: предполагается, что LLM генерирует только содержимое 'begin ... end'.
-    # Если в 'theorem_statement' несколько 'sorry', это заменит только первое.
-    # Для miniF2F обычно одна 'sorry' в теле доказательства.
     full_lean_code = theorem_statement.replace("sorry", generated_proof_body, 1)
 
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     temp_file_path = TEMP_DIR / f"temp_proof_{time.time_ns()}.lean"
 
     # Добавляем необходимые импорты для успешной компиляции Lean файла
-    # Это важно для miniF2F бенчмарка.
     lean_imports = """
 import minif2f_import
 
@@ -192,24 +150,22 @@ open_locale rat
             f.write(full_lean_code)
 
         process = subprocess.run(
-            [LEAN_EXECUTABLE_PATH, str(temp_file_path)], # str() для совместимости с subprocess
+            [LEAN_EXECUTABLE_PATH, str(temp_file_path)],
             capture_output=True,
             text=True,
             check=False,
-            timeout=LEAN_VERIFICATION_TIMEOUT # Добавляем таймаут
+            timeout=LEAN_VERIFICATION_TIMEOUT
         )
 
         output = process.stdout + process.stderr
         
-        # Логируем полный вывод Lean на уровне DEBUG для отладки
         logger.debug(f"Lean output for {temp_file_path.name}:\n{output}")
 
         if "error:" in output.lower():
             logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported errors.")
-            logger.debug(f"  Lean errors: {output}") # Логируем ошибки на DEBUG
+            logger.debug(f"  Lean errors: {output}")
             return False
         
-        # Проверяем, не осталось ли 'sorry' в сгенерированном доказательстве
         if "warning: declaration" in output.lower() and "uses sorry" in output.lower():
             logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Generated proof still uses 'sorry'.")
             return False
@@ -222,29 +178,24 @@ open_locale rat
         return False
     except subprocess.TimeoutExpired:
         logger.error(f"  ❌ Lean verification timed out for {temp_file_path.name} after {LEAN_VERIFICATION_TIMEOUT} seconds.")
-        # Можно вывести часть вывода, если он был до таймаута
-        # logger.debug(f"  Partial Lean output before timeout:\n{process.stdout + process.stderr}")
         return False
     except Exception as e:
         logger.error(f"  ❌ An unexpected error occurred during Lean verification for {temp_file_path.name}: {e}")
         return False
     finally:
         if temp_file_path.exists():
-            temp_file_path.unlink() # Удаляем временный файл
+            temp_file_path.unlink()
 
 def extract_proof_body(llm_response_content: str) -> str | None:
     """
     Извлекает тело доказательства из ответа LLM.
     Приоритизирует блоки кода в Markdown, затем обычные блоки begin...end.
     """
-    # Попытка извлечь из Lean Markdown блока (с необязательным `lean` или без)
     match = re.search(r'```(?:lean)?\s*begin\s*(.*?)\s*end\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
     if match:
         logger.info("  Extracted proof body from Lean markdown block.")
         return match.group(1).strip()
 
-    # Попытка извлечь из обычного begin...end блока (более гибкий regex к отступам)
-    # Используем `\s*` для гибкости пробелов и переносов строк.
     match = re.search(r'begin\s*(.*?)\s*end', llm_response_content, re.DOTALL | re.IGNORECASE)
     if match:
         logger.info("  Extracted proof body from plain begin...end block.")
@@ -272,15 +223,6 @@ def generate_and_verify_proof(theorem: dict) -> bool:
     logger.info(f"\n--- Processing Theorem: {theorem['name']} ---")
     logger.info(f"Original statement (first 200 chars):\n{theorem['statement'][:200]}...")
 
-    if not theorem['has_sorry']:
-        logger.info("  (This theorem already has a proof. Skipping LLM generation, verifying existing.)")
-        proof_body_match = re.search(r'begin\s*(.*?)\s*end', theorem['statement'], re.DOTALL | re.MULTILINE)
-        if proof_body_match:
-            return verify_lean_proof(theorem['statement'], proof_body_match.group(1).strip())
-        else:
-            logger.warning("  Warning: Could not extract proof body from already solved theorem for re-verification. Assuming failed.")
-            return False
-            
     try:
         system_prompt = (
             "Ты - высококвалифицированный Lean 4 доказыватель теорем. "
@@ -310,10 +252,6 @@ def generate_and_verify_proof(theorem: dict) -> bool:
         completion = _call_llm_with_retry(
             messages=messages,
             model_name=MODEL_NAME,
-            extra_headers={
-                "HTTP-Referer": "https://math-agent-project.com",
-                "X-Title": "Lean Prover Agent",
-            },
             max_tokens=2048,
             temperature=0.1,
         )
@@ -336,55 +274,39 @@ def generate_and_verify_proof(theorem: dict) -> bool:
 
 # --- Основная логика ---
 def main():
-    # Объявляем глобальные переменные, которые будут изменены, в самом начале функции
-    global MODEL_NAME, LEAN_EXECUTABLE_PATH, LEAN_VERIFICATION_TIMEOUT
-    # Также, если вы хотите изменить VALID_LEAN_PATH_DEFAULT или MICRO_SUBSET_SIZE_DEFAULT
-    # global VALID_LEAN_PATH_DEFAULT, MICRO_SUBSET_SIZE_DEFAULT
-    # Но лучше, чтобы эти были локальными или передавались как параметры,
-    # как я и сделал ниже.
+    global MODEL_NAME
 
     parser = argparse.ArgumentParser(description="Automated Lean 4 theorem proving with LLM.")
     parser.add_argument("--subset_size", type=int, default=MICRO_SUBSET_SIZE_DEFAULT,
                         help="Total number of tasks for the micro-subset.")
-    parser.add_argument("--lean_file", type=Path, default=VALID_LEAN_PATH_DEFAULT,
-                        help="Path to the Lean file containing theorems (e.g., miniF2F/lean/src/valid.lean).")
-    parser.add_argument("--model", type=str, default=MODEL_NAME, # Здесь MODEL_NAME используется как дефолтное значение, это нормально.
+    parser.add_argument("--json_file", type=Path, default=VALID_JSON_PATH_DEFAULT,
+                        help="Path to the JSON file containing theorems.")
+    parser.add_argument("--model", type=str, default=MODEL_NAME,
                         help="OpenRouter model name to use for proof generation.")
     parser.add_argument("--log_level", type=str, default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level (e.g., DEBUG for verbose output).")
     args = parser.parse_args()
 
-    # Теперь присвоения будут работать корректно
-    # Эти переменные не нужно объявлять global, так как они используются только в main
     MICRO_SUBSET_SIZE = args.subset_size
-    VALID_LEAN_PATH = args.lean_file
-
-    # А вот MODEL_NAME нужно, так как она используется в других функциях как глобальная
-    MODEL_NAME = args.model # Изменяем глобальную переменную
+    VALID_JSON_PATH = args.json_file
+    MODEL_NAME = args.model
     
-    # Установка уровня логирования
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
     logger.info("Starting MiniF2F Lean Prover Benchmark with Claude Sonnet via OpenRouter...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, Lean File='{VALID_LEAN_PATH}', Model='{MODEL_NAME}', Log Level='{args.log_level}'")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{MODEL_NAME}', Log Level='{args.log_level}'")
     
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
-        lean_content = read_lean_file(VALID_LEAN_PATH)
+        all_theorems = read_json_file(VALID_JSON_PATH)
     except Exception as e:
-        logger.critical(f"Failed to load Lean file: {e}. Exiting.")
-        return
-
-    try:
-        all_theorems = parse_lean_theorems(lean_content)
-    except Exception as e:
-        logger.critical(f"Failed to parse Lean theorems: {e}. Exiting.")
+        logger.critical(f"Failed to load JSON file: {e}. Exiting.")
         return
     
     if not all_theorems:
-        logger.warning("No theorems found in the Lean file. Exiting.")
+        logger.warning("No theorems found in the JSON file. Exiting.")
         return
 
     micro_subset = select_micro_subset_stratified(all_theorems, MICRO_SUBSET_SIZE)
