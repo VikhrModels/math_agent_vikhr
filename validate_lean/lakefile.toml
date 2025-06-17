@@ -1,0 +1,10 @@
+name = "validate_lean"
+version = "0.1.0"
+defaultTargets = ["validate_lean"]
+
+[[lean_lib]]
+name = "ValidateLean"
+
+[[lean_exe]]
+name = "validate_lean"
+root = "Main"
