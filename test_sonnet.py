@@ -132,11 +132,6 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
         logger.warning("  ❌ Empty proof body provided.")
         return False
 
-    # Check for begin/end in the proof
-    if not re.search(r'begin\s+.*\s+end', generated_proof_body, re.DOTALL | re.IGNORECASE):
-        logger.warning("  ❌ Proof body must be wrapped in begin/end block.")
-        return False
-
     # Create complete theorem with generated proof
     full_lean_code = theorem_statement.replace("sorry", generated_proof_body, 1)
 
@@ -233,9 +228,9 @@ def extract_proof_body(llm_response_content: str) -> str | None:
         if begin_match:
             logger.info("  Extracted proof body from Lean markdown block with begin/end.")
             return begin_match.group(1).strip()
-        # If no begin/end, return None
-        logger.warning("  No begin/end block found in Lean markdown block.")
-        return None
+        # If no begin/end, return the entire content as the proof
+        logger.info("  Extracted proof body from Lean markdown block without begin/end.")
+        return content
 
     # Then try to find begin/end blocks in plain text
     match = re.search(r'begin\s*(.*?)\s*end', llm_response_content, re.DOTALL | re.IGNORECASE)
