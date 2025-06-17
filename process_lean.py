@@ -10,6 +10,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Определяем базовую директорию проекта
+BASE_DIR = Path(__file__).parent
+
 def read_lean_file(filepath: Path) -> str:
     """Читает содержимое Lean файла."""
     logger.info(f"Reading Lean file: {filepath}")
@@ -69,8 +72,9 @@ def process_lean_theorems(lean_content: str) -> list[dict]:
     return theorems
 
 def main():
-    input_file = Path("/home/ismail/math_agent_vikhr/miniF2F/lean/src/valid.lean")
-    output_file = Path("/home/ismail/math_agent_vikhr/valid.json")
+    # Используем относительные пути относительно BASE_DIR
+    input_file = BASE_DIR / "miniF2F" / "lean" / "src" / "valid.lean"
+    output_file = BASE_DIR / "valid.json"
 
     try:
         # Читаем содержимое файла

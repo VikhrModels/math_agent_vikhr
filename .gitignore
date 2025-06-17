@@ -27,3 +27,6 @@ tmp/
 dist/
 build/
 *.egg-info/ 
+
+#microsubset
+micro_subset.txt

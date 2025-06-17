@@ -32,7 +32,7 @@ MICRO_SUBSET_FILE = BASE_DIR / "micro_subset.txt"
 VALID_JSON_PATH_DEFAULT = BASE_DIR / "valid.json"
 
 # Общее количество задач для микросабсета по умолчанию
-MICRO_SUBSET_SIZE_DEFAULT = 5
+MICRO_SUBSET_SIZE_DEFAULT = 20
 
 # --- Настройка логирования ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -149,8 +149,10 @@ open_locale rat
             f.write(lean_imports)
             f.write(full_lean_code)
 
+        # Добавляем путь к директории с исходниками Lean
+        lean_source_path = BASE_DIR / "miniF2F" / "lean" / "src"
         process = subprocess.run(
-            [LEAN_EXECUTABLE_PATH, str(temp_file_path)],
+            [LEAN_EXECUTABLE_PATH, "-L", str(lean_source_path), str(temp_file_path)],
             capture_output=True,
             text=True,
             check=False,
@@ -159,11 +161,17 @@ open_locale rat
 
         output = process.stdout + process.stderr
         
-        logger.debug(f"Lean output for {temp_file_path.name}:\n{output}")
+        # Логируем полный вывод Lean для отладки
+        logger.debug(f"Full Lean output for {temp_file_path.name}:\n{output}")
 
         if "error:" in output.lower():
             logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported errors.")
-            logger.debug(f"  Lean errors: {output}")
+            # Извлекаем и логируем только строки с ошибками
+            error_lines = [line for line in output.splitlines() if "error:" in line.lower()]
+            if error_lines:
+                logger.warning("  Lean errors:")
+                for error in error_lines:
+                    logger.warning(f"    {error}")
             return False
         
         if "warning: declaration" in output.lower() and "uses sorry" in output.lower():
@@ -191,11 +199,20 @@ def extract_proof_body(llm_response_content: str) -> str | None:
     Извлекает тело доказательства из ответа LLM.
     Приоритизирует блоки кода в Markdown, затем обычные блоки begin...end.
     """
-    match = re.search(r'```(?:lean)?\s*begin\s*(.*?)\s*end\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
+    # First try to find Lean code in markdown blocks
+    match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
     if match:
+        content = match.group(1).strip()
+        # If the content has begin/end, extract just that part
+        begin_match = re.search(r'begin\s*(.*?)\s*end', content, re.DOTALL | re.IGNORECASE)
+        if begin_match:
+            logger.info("  Extracted proof body from Lean markdown block with begin/end.")
+            return begin_match.group(1).strip()
+        # Otherwise return the whole content
         logger.info("  Extracted proof body from Lean markdown block.")
-        return match.group(1).strip()
+        return content
 
+    # Then try to find begin/end blocks in plain text
     match = re.search(r'begin\s*(.*?)\s*end', llm_response_content, re.DOTALL | re.IGNORECASE)
     if match:
         logger.info("  Extracted proof body from plain begin...end block.")
@@ -252,13 +269,17 @@ def generate_and_verify_proof(theorem: dict) -> bool:
         completion = _call_llm_with_retry(
             messages=messages,
             model_name=MODEL_NAME,
+            extra_headers={
+                "HTTP-Referer": "https://math-agent-project.com",
+                "X-Title": "Lean Prover Agent",
+            },
             max_tokens=2048,
             temperature=0.1,
         )
 
         generated_content = completion.choices[0].message.content
         
-        logger.info(f"Received LLM response for {theorem['name']}. Content (first 200 chars):\n{generated_content[:200]}...")
+        logger.info(f"Received LLM response for {theorem['name']}. Content :\n{generated_content[:]}...")
 
         generated_proof_body = extract_proof_body(generated_content)
         if generated_proof_body:
