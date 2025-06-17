@@ -123,7 +123,7 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
 def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool:
     """
     Creates a temporary Lean file with the generated proof
-    and verifies it using Lean.
+    and verifies it using Lean through the validate_lean setup.
     """
     logger.info(f"Attempting Lean verification.")
 
@@ -135,12 +135,13 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
     # Create complete theorem with generated proof
     full_lean_code = theorem_statement.replace("sorry", generated_proof_body, 1)
 
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    temp_file_path = TEMP_DIR / f"temp_proof_{time.time_ns()}.lean"
+    # Create a temporary file in the validate_lean directory
+    validate_lean_dir = BASE_DIR / "validate_lean"
+    temp_file_path = validate_lean_dir / f"temp_proof_{time.time_ns()}.lean"
 
     # Add necessary imports for successful Lean file compilation
     lean_imports = """
-import minif2f_import
+import ValidateLean.Basic
 
 open_locale big_operators
 open_locale real
@@ -154,10 +155,24 @@ open_locale rat
             f.write(lean_imports)
             f.write(full_lean_code)
 
-        # Add path to Lean source directory
-        lean_source_path = BASE_DIR / "miniF2F" / "lean" / "src"
+        # First build the project to ensure all dependencies are available
+        build_process = subprocess.run(
+            ["lake", "build"],
+            cwd=str(validate_lean_dir),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=LEAN_VERIFICATION_TIMEOUT
+        )
+
+        if build_process.returncode != 0:
+            logger.error(f"  ❌ Failed to build validate_lean project: {build_process.stderr}")
+            return False
+
+        # Run lean directly in the validate_lean directory
         process = subprocess.run(
-            [LEAN_EXECUTABLE_PATH, "-L", str(lean_source_path), str(temp_file_path)],
+            ["lean", str(temp_file_path)],
+            cwd=str(validate_lean_dir),
             capture_output=True,
             text=True,
             check=False,
@@ -202,7 +217,7 @@ open_locale rat
         return True
 
     except FileNotFoundError:
-        logger.error(f"  ❌ Lean executable '{LEAN_EXECUTABLE_PATH}' not found. Make sure Lean 4 is installed and in your PATH, or specify the full path.")
+        logger.error(f"  ❌ Lake or Lean executable not found. Make sure Lean 4 and Lake are installed and in your PATH.")
         return False
     except subprocess.TimeoutExpired:
         logger.error(f"  ❌ Lean verification timed out for {temp_file_path.name} after {LEAN_VERIFICATION_TIMEOUT} seconds.")
