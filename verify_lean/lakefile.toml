@@ -1,9 +1,6 @@
-# lakefile.toml
 name = "VerifyLean"
 version = "0.1.0"
-
-[dependencies]
-mathlib = { git = "https://github.com/leanprover-community/mathlib4.git", rev = "master" }
+defaultTargets = ["verifylean"]
 
 [[lean_lib]]
 name = "VerifyLean"
