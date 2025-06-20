@@ -28,7 +28,7 @@ The core workflow is as follows:
 Clone this repository and its submodules:
 
 ```bash
-git clone --recurse-submodules https://github.com/your-username/math_agent_vikhr.git
+git clone --recurse-submodules https://github.com/umbra2728/math_agent_vikhr.git
 cd math_agent_vikhr
 ```
 
@@ -86,7 +86,7 @@ You can customize the agent's behavior with the following command-line arguments
     ```bash
     python test_sonnet.py --json_file /path/to/your/theorems.json
     ```
--   `--model`: The OpenRouter model name to use. Defaults to `anthropic/claude-3-sonnet`.
+-   `--model`: The OpenRouter model name to use. Defaults to `anthropic/claude-sonnet-4`.
     ```bash
     python test_sonnet.py --model "google/gemini-pro"
     ```
