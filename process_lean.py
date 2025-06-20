@@ -3,14 +3,15 @@ import re
 from pathlib import Path
 import logging
 
-# Logging setup
+# --- Logging Setup ---
+# Configures basic logging to provide visibility into the script's operations.
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Define project base directory
+# Define project base directory to construct paths in a platform-independent way.
 BASE_DIR = Path(__file__).parent
 
 def read_lean_file(filepath: Path) -> str:
@@ -28,13 +29,24 @@ def read_lean_file(filepath: Path) -> str:
 
 def process_lean_theorems(lean_content: str) -> list[dict]:
     """
-    Parses Lean file and extracts theorem statements.
-    Returns a list of dictionaries with theorem information.
+    Parses a string of Lean code to extract theorem and lemma statements.
+
+    This function uses regular expressions to find all declarations (like theorem,
+    lemma, def, etc.), extracts their names and full statements, and determines
+    if they have a complete proof or are left with `sorry`.
+    Solved proofs are replaced with `sorry` to create a uniform set of problems
+    for the language model.
+
+    Returns a list of dictionaries, where each dictionary represents a theorem.
     """
     logger.info("Processing theorems from Lean content.")
     theorems = []
 
-    # Regular expression to capture the entire declaration
+    # This regular expression is designed to find and capture blocks of code
+    # that define a theorem, lemma, definition, etc. It captures the full
+    # statement and the name of the declaration.
+    # It looks for a declaration keyword and captures until it finds the next
+    # one or the end of the file.
     theorem_blocks_pattern = re.compile(
         r'(?m)^'  # Start of line (multiline mode)
         r'(?P<full_statement>'  # 'full_statement' group captures the entire declaration
@@ -49,17 +61,20 @@ def process_lean_theorems(lean_content: str) -> list[dict]:
         full_statement = match.group('full_statement').strip()
         name = match.group('name')
 
-        # Check for solution between begin and end
+        # After finding a declaration, we check if it has a proof.
+        # A proof is typically enclosed in a `begin...end` block.
         begin_end_pattern = re.compile(r'begin\s*(.*?)\s*end', re.DOTALL)
         begin_end_match = begin_end_pattern.search(full_statement)
         
         is_solved = False
         if begin_end_match:
             proof_content = begin_end_match.group(1).strip()
-            # If there is something between begin and end besides empty space and it's not sorry
+            # A proof is considered "solved" if the block is not empty
+            # and does not contain `sorry`.
             if proof_content and 'sorry' not in proof_content:
                 is_solved = True
-                # Replace solution with sorry
+                # To create a consistent problem format, we replace the
+                # existing proof with a `sorry` block.
                 full_statement = begin_end_pattern.sub('begin\n  sorry\nend', full_statement)
 
         theorems.append({
@@ -72,7 +87,15 @@ def process_lean_theorems(lean_content: str) -> list[dict]:
     return theorems
 
 def main():
-    # Use relative paths relative to BASE_DIR
+    """
+    Main function to execute the script.
+
+    It defines the input Lean file and the output JSON file, then orchestrates
+    the process of reading the Lean file, processing its content to extract
+    theorems, and writing the results to the JSON file.
+    """
+    # Define input and output file paths. The script reads from a `.lean` file
+    # and writes the processed data to a `.json` file.
     input_file = BASE_DIR / "miniF2F" / "lean" / "src" / "valid.lean"
     output_file = BASE_DIR / "valid.json"
 

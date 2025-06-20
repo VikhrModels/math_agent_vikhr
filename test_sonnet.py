@@ -11,30 +11,36 @@ from openai import OpenAI
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
 # --- Constants and default configuration ---
+# This section defines constants and default settings for the script.
+# These can be customized as needed.
+
 # Path to Lean 4 executable. Make sure 'lean' is available in PATH,
 # or specify the full path, e.g., '/opt/lean4/bin/lean'
 LEAN_EXECUTABLE_PATH = "lean"
 LEAN_VERIFICATION_TIMEOUT = 300  # Timeout for Lean verification in seconds (5 minutes)
 
-# OpenRouter API key is taken from environment variable
+# OpenRouter API key is taken from environment variable for security.
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
+# Configuration for the OpenRouter API service.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_NAME = "anthropic/claude-sonnet-4" # Default model
+MODEL_NAME = "anthropic/claude-sonnet-4" # Default model for theorem proving.
 
-# Directories for output files and temporary data
+# Directories for output files and temporary data, structured relative to the script's location.
 BASE_DIR = Path(__file__).parent
 LOG_DIR = BASE_DIR / "log"
 TEMP_DIR = BASE_DIR / "tmp"
 MICRO_SUBSET_FILE = BASE_DIR / "micro_subset.txt"
 
-# Default path to valid.json file
+# Default path to valid.json file, which contains the theorems to be processed.
 VALID_JSON_PATH_DEFAULT = BASE_DIR / "valid.json"
 
-# Default total number of tasks for micro-subset
+# Default total number of tasks for the micro-subset, used for quick testing runs.
 MICRO_SUBSET_SIZE_DEFAULT = 10
 
 # --- Logging setup ---
+# Configures a robust logging system to track the script's execution,
+# writing logs to both a file and the console.
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +53,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- OpenRouter client initialization ---
+# Sets up the API client for communication with the OpenRouter service.
+# Exits gracefully if the required API key is not found.
 try:
     if not OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY environment variable not set. Please set it before running the script.")
@@ -60,6 +68,8 @@ except ValueError as e:
     exit(1) # Exit if API key is not set
 
 # --- Helper functions ---
+# This section contains reusable functions that encapsulate specific logic,
+# such as file handling, data selection, and Lean proof verification.
 
 def read_json_file(filepath: Path) -> list[dict]:
     """Reads the contents of a JSON file with theorems."""
@@ -77,6 +87,7 @@ def read_json_file(filepath: Path) -> list[dict]:
 def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -> list[dict]:
     """
     Selects a micro-subset of tasks while preserving the ratio of solved/unsolved tasks.
+    This ensures that testing subsets are representative of the larger dataset.
     """
     solved_theorems = [t for t in all_theorems if t['is_solved']]
     unsolved_theorems = [t for t in all_theorems if not t['is_solved']]
@@ -122,8 +133,11 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
 
 def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool:
     """
-    Creates a temporary Lean file with the generated proof
-    and verifies it using the project's Lean 3 setup.
+    Verifies a generated Lean proof by creating a temporary Lean file and compiling it.
+
+    This function simulates the actual environment of the miniF2F project to ensure
+    that the generated proof is valid within the project's context, including all
+    necessary imports and dependencies.
     """
     logger.info("Attempting Lean 3 verification.")
 
@@ -143,7 +157,8 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
     # Create complete theorem with generated proof
     full_lean_code = statement_base + " :=\n" + generated_proof_body
 
-    # The miniF2F project is the root for verification
+    # The miniF2F project structure is required for verification, as it contains
+    # dependent libraries like mathlib. We create the temp file within its source directory.
     minif2f_root = BASE_DIR / "miniF2F"
     src_dir = minif2f_root / "lean" / "src"
     src_dir.mkdir(parents=True, exist_ok=True)  # Ensure src dir exists
@@ -154,7 +169,8 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
     temp_file_path = src_dir / temp_file_name
     olean_path = temp_file_path.with_suffix('.olean')
 
-    # Add the standard minif2f import
+    # The `minif2f_import` file contains all necessary imports for the miniF2F theorems.
+    # It must be included for the proof to be verifiable.
     lean_imports = "import minif2f_import\n\n"
 
     try:
@@ -162,8 +178,9 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
             f.write(lean_imports)
             f.write(full_lean_code)
 
-        # Run `lean --make` from the root of the miniF2F project.
-        # This is the correct way to build a file that depends on mathlib.
+        # We run `lean --make` from the root of the miniF2F project.
+        # This command compiles the file and its dependencies, which is the
+        # standard way to build a Lean project file.
         process = subprocess.run(
             [LEAN_EXECUTABLE_PATH, "--make", f"lean/src/{temp_file_name}"],
             cwd=str(minif2f_root),
@@ -215,8 +232,10 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
 
 def extract_proof_body(llm_response_content: str) -> str | None:
     """
-    Extracts the proof body from LLM response.
-    The proof body must be a complete `begin...end` block or start with `by`.
+    Extracts the Lean proof body from the LLM's response.
+
+    The function searches for a Lean code block in markdown and then validates
+    if the content is a standard proof format (a `begin...end` block or a `by` tactic).
     """
     # First, try to find Lean code in markdown blocks
     match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
@@ -244,7 +263,10 @@ def extract_proof_body(llm_response_content: str) -> str | None:
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5),
        before_sleep=before_sleep_log(logger, logging.WARNING))
 def _call_llm_with_retry(messages: list[dict], model_name: str, extra_headers: dict, max_tokens: int, temperature: float):
-    """Helper function for calling LLM with retry logic."""
+    """
+    A wrapper for the OpenAI API call that includes automatic retries with exponential backoff.
+    This makes the script more resilient to transient network issues or API rate limits.
+    """
     return client.chat.completions.create(
         extra_headers=extra_headers,
         model=model_name,
@@ -255,7 +277,11 @@ def _call_llm_with_retry(messages: list[dict], model_name: str, extra_headers: d
 
 def generate_and_verify_proof(theorem: dict) -> bool:
     """
-    Sends a request to LLM to generate a proof and verifies it.
+    Orchestrates the full process for a single theorem:
+    1. Constructs a prompt for the LLM.
+    2. Sends the request to the LLM to generate a proof.
+    3. Extracts the proof from the response.
+    4. Verifies the proof using the Lean executable.
     """
     logger.info(f"\n--- Processing Theorem: {theorem['name']} ---")
     logger.info(f"Original statement (first 200 chars):\n{theorem['statement'][:200]}...")
@@ -313,6 +339,12 @@ def generate_and_verify_proof(theorem: dict) -> bool:
 
 # --- Main logic ---
 def main():
+    """
+    Main function to run the script.
+
+    Parses command-line arguments, sets up the environment, reads theorems,
+    runs the proof generation and verification loop, and prints a summary of the results.
+    """
     global MODEL_NAME
 
     parser = argparse.ArgumentParser(description="Automated Lean 4 theorem proving with LLM.")
