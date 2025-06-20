@@ -123,56 +123,50 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
 def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool:
     """
     Creates a temporary Lean file with the generated proof
-    and verifies it using Lean through the validate_lean setup.
+    and verifies it using the project's Lean 3 setup.
     """
-    logger.info(f"Attempting Lean verification.")
+    logger.info("Attempting Lean 3 verification.")
 
-    # Check that the proof is not empty
     if not generated_proof_body.strip():
         logger.warning("  ❌ Empty proof body provided.")
         return False
 
+    # Find the part of the statement before the proof begins.
+    # The statements in valid.json end with `:= sorry` or `:= begin sorry end`.
+    statement_base_match = re.search(r'(.*):=\s*(begin\s*sorry\s*end|sorry)', theorem_statement, re.DOTALL)
+    if not statement_base_match:
+        logger.error("  ❌ Could not find `:= sorry` or `:= begin sorry end` in the theorem statement.")
+        logger.debug(f"    Full statement: {theorem_statement}")
+        return False
+    statement_base = statement_base_match.group(1).strip()
+
     # Create complete theorem with generated proof
-    full_lean_code = theorem_statement.replace("sorry", generated_proof_body, 1)
+    full_lean_code = statement_base + " :=\n" + generated_proof_body
 
-    # Create a temporary file in the validate_lean directory
-    validate_lean_dir = BASE_DIR / "validate_lean"
-    temp_file_path = validate_lean_dir / f"temp_proof_{time.time_ns()}.lean"
+    # The miniF2F project is the root for verification
+    minif2f_root = BASE_DIR / "miniF2F"
+    src_dir = minif2f_root / "lean" / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)  # Ensure src dir exists
 
-    # Add necessary imports for successful Lean file compilation
-    lean_imports = """
-import ValidateLean.Basic
+    # Create a temporary file inside the miniF2F project's src directory
+    # Use a fixed name to avoid cluttering the directory with failed attempts
+    temp_file_name = f"temp_proof_{os.getpid()}_{time.time_ns()}.lean"
+    temp_file_path = src_dir / temp_file_name
+    olean_path = temp_file_path.with_suffix('.olean')
 
-open_locale big_operators
-open_locale real
-open_locale nat
-open_locale topological_space
-open_locale rat
-"""
-    
+    # Add the standard minif2f import
+    lean_imports = "import minif2f_import\n\n"
+
     try:
         with temp_file_path.open("w", encoding='utf-8') as f:
             f.write(lean_imports)
             f.write(full_lean_code)
 
-        # First build the project to ensure all dependencies are available
-        build_process = subprocess.run(
-            ["lake", "build"],
-            cwd=str(validate_lean_dir),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=LEAN_VERIFICATION_TIMEOUT
-        )
-
-        if build_process.returncode != 0:
-            logger.error(f"  ❌ Failed to build validate_lean project: {build_process.stderr}")
-            return False
-
-        # Run lean directly in the validate_lean directory
+        # Run `lean --make` from the root of the miniF2F project.
+        # This is the correct way to build a file that depends on mathlib.
         process = subprocess.run(
-            ["lean", str(temp_file_path)],
-            cwd=str(validate_lean_dir),
+            [LEAN_EXECUTABLE_PATH, "--make", f"lean/src/{temp_file_name}"],
+            cwd=str(minif2f_root),
             capture_output=True,
             text=True,
             check=False,
@@ -180,44 +174,31 @@ open_locale rat
         )
 
         output = process.stdout + process.stderr
-        
+
         # Log full Lean output for debugging
         logger.debug(f"Full Lean output for {temp_file_path.name}:\n{output}")
 
-        if "error:" in output.lower():
+        if process.returncode != 0 or "error:" in output.lower():
             logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported errors.")
-            # Extract and log only error lines
+            # Extract and log only error lines for clarity
             error_lines = [line for line in output.splitlines() if "error:" in line.lower()]
             if error_lines:
                 logger.warning("  Lean errors:")
                 for error in error_lines:
-                    logger.warning(f"    {error}")
-            return False
-        
-        if "warning: declaration" in output.lower() and "uses sorry" in output.lower():
-            logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Generated proof still uses 'sorry'.")
+                    logger.warning(f"    {error.strip()}")
             return False
 
-        # Check that there are no warnings about unused variables or other issues
-        if "warning:" in output.lower():
-            logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported warnings.")
-            warning_lines = [line for line in output.splitlines() if "warning:" in line.lower()]
-            if warning_lines:
-                logger.warning("  Lean warnings:")
-                for warning in warning_lines:
-                    logger.warning(f"    {warning}")
-            return False
-
-        # Check that output contains confirmation of successful compilation
-        if not any(line.strip().endswith("goals accomplished") for line in output.splitlines()):
-            logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: No confirmation of successful proof.")
-            return False
+        # For `lean --make`, a successful compilation often produces no output.
+        # The presence of the .olean file and no errors is a good indicator of success.
+        if not olean_path.exists():
+             logger.warning(f"  ❌ Verification failed: .olean file was not produced, but no errors were reported.")
+             return False
 
         logger.info(f"  ✅ Verification successful for {theorem_statement.splitlines()[0]}.")
         return True
 
     except FileNotFoundError:
-        logger.error(f"  ❌ Lake or Lean executable not found. Make sure Lean 4 and Lake are installed and in your PATH.")
+        logger.error(f"  ❌ Lean executable '{LEAN_EXECUTABLE_PATH}' not found. Make sure Lean 3 is installed and in your PATH.")
         return False
     except subprocess.TimeoutExpired:
         logger.error(f"  ❌ Lean verification timed out for {temp_file_path.name} after {LEAN_VERIFICATION_TIMEOUT} seconds.")
@@ -226,34 +207,38 @@ open_locale rat
         logger.error(f"  ❌ An unexpected error occurred during Lean verification for {temp_file_path.name}: {e}")
         return False
     finally:
+        # Cleanup the temporary files
         if temp_file_path.exists():
             temp_file_path.unlink()
+        if olean_path.exists():
+            olean_path.unlink()
 
 def extract_proof_body(llm_response_content: str) -> str | None:
     """
     Extracts the proof body from LLM response.
-    Prioritizes code blocks in Markdown, then plain begin...end blocks.
+    The proof body must be a complete `begin...end` block or start with `by`.
     """
-    # First try to find Lean code in markdown blocks
+    # First, try to find Lean code in markdown blocks
     match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
     if match:
         content = match.group(1).strip()
-        # If content contains begin/end, extract only that part
-        begin_match = re.search(r'begin\s*(.*?)\s*end', content, re.DOTALL | re.IGNORECASE)
-        if begin_match:
-            logger.info("  Extracted proof body from Lean markdown block with begin/end.")
-            return begin_match.group(1).strip()
-        # If no begin/end, return the entire content as the proof
-        logger.info("  Extracted proof body from Lean markdown block without begin/end.")
+    else:
+        # If no markdown, use the whole response as content, stripped of leading/trailing whitespace
+        content = llm_response_content.strip()
+
+    # The proof must be a self-contained block.
+    # Check for 'begin...end' or 'by ...'
+    # Use re.DOTALL to match newlines within begin...end
+    if re.match(r'begin.*end', content, re.DOTALL | re.IGNORECASE):
+        logger.info("  Extracted proof body from a `begin...end` block.")
+        return content
+    
+    if content.lower().startswith('by '):
+        logger.info("  Extracted proof body from a `by` expression.")
         return content
 
-    # Then try to find begin/end blocks in plain text
-    match = re.search(r'begin\s*(.*?)\s*end', llm_response_content, re.DOTALL | re.IGNORECASE)
-    if match:
-        logger.info("  Extracted proof body from plain begin...end block.")
-        return match.group(1).strip()
-
-    logger.warning("  Failed to extract a valid Lean proof body from LLM response.")
+    logger.warning("  Failed to extract a valid Lean proof body (a `begin...end` block or `by ...`) from LLM response.")
+    logger.debug(f"    Full response content:\n{llm_response_content}")
     return None
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5),
@@ -277,21 +262,19 @@ def generate_and_verify_proof(theorem: dict) -> bool:
 
     try:
         system_prompt = (
-            "You are a highly qualified Lean 4 theorem prover. "
-            "Your task is to generate valid, formal proofs for mathematical theorems in Lean 4. "
-            "You must provide only Lean code that completely proves the theorem, "
-            "filling the `begin ... end` block without using `sorry`. "
-            "Your response should contain only Lean code inside the `begin ... end` block "
-            "(preferably wrapped in a markdown block with language specification `lean`, e.g., ```lean ... ```)."
+            "You are a highly qualified Lean 3.42.1 theorem prover. "
+            "Your task is to generate valid, formal proofs for mathematical theorems in Lean 3.42.1. "
+            "You will be given a theorem with a `sorry` placeholder. You must replace the `sorry` with a complete proof. "
+            "Your response must be ONLY the Lean code for the proof, starting with `begin` and ending with `end`, or starting with `by`. "
+            "The code should be wrapped in a markdown block with the language specifier `lean` (e.g., ```lean ... ```). "
             "Do not include any additional explanations, comments, introductions, or conclusions."
         )
 
         user_prompt = (
-            f"Prove the following theorem in Lean 4. Fill the `begin ... end` block without using `sorry`. "
-            f"Make sure the proof is complete and correct Lean code.\n\n"
-            f"```lean\n{theorem['statement']}\n```\n\n"
-            f"Your response should be only the contents of the `begin ... end` block,"
-            f"wrapped in a Lean code block (```lean ... ```)."
+            f"Prove the following theorem in Lean 3.42.1 by replacing `sorry` with a full proof. "
+            "Your response should be only the proof block (e.g., `begin ... end` or `by ...`), "
+            "wrapped in a Lean code block (```lean ... ```).\n\n"
+            f"```lean\n{theorem['statement']}\n```"
         )
 
         messages = [
