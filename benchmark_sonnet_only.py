@@ -10,6 +10,26 @@ from pathlib import Path
 from openai import OpenAI
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
+# Import configuration
+from config import (
+    OPENROUTER_API_KEY,
+    OPENROUTER_API_BASE,
+    DEFAULT_MODEL,
+    MINIF2F_DIR,
+    LOG_DIR,
+    TMP_DIR,
+    LEAN_OUTPUT_FILE,
+    LEAN_TIMEOUT,
+    DEFAULT_SUBSET_SIZE,
+    DEFAULT_LOG_LEVEL,
+    DEFAULT_JSON_FILE,
+    LOG_FORMAT,
+    validate_config
+)
+
+# Import agents
+from agents import create_math_prover_agent
+
 # --- Constants and default configuration ---
 # This section defines constants and default settings for the script.
 # These can be customized as needed.
@@ -17,34 +37,17 @@ from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_l
 # Path to Lean 4 executable. Make sure 'lean' is available in PATH,
 # or specify the full path, e.g., '/opt/lean4/bin/lean'
 LEAN_EXECUTABLE_PATH = "lean"
-LEAN_VERIFICATION_TIMEOUT = 300  # Timeout for Lean verification in seconds (5 minutes)
 
-# OpenRouter API key is taken from environment variable for security.
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-
-# Configuration for the OpenRouter API service.
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-MODEL_NAME = "anthropic/claude-sonnet-4" # Default model for theorem proving.
-
-# Directories for output files and temporary data, structured relative to the script's location.
-BASE_DIR = Path(__file__).parent
-LOG_DIR = BASE_DIR / "log"
-TEMP_DIR = BASE_DIR / "tmp"
-MICRO_SUBSET_FILE = BASE_DIR / "micro_subset.txt"
-
-# Default path to valid.json file, which contains the theorems to be processed.
-VALID_JSON_PATH_DEFAULT = BASE_DIR / "valid.json"
-
-# Default total number of tasks for the micro-subset, used for quick testing runs.
-MICRO_SUBSET_SIZE_DEFAULT = 10
+# Micro-subset file for tracking selected tasks
+MICRO_SUBSET_FILE = Path(__file__).parent / "micro_subset.txt"
 
 # --- Logging setup ---
 # Configures a robust logging system to track the script's execution,
 # writing logs to both a file and the console.
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=getattr(logging, DEFAULT_LOG_LEVEL),
+    format=LOG_FORMAT,
     handlers=[
         logging.FileHandler(LOG_DIR / "llm_requests.log"),
         logging.StreamHandler()  # Also output to console
@@ -56,16 +59,14 @@ logger = logging.getLogger(__name__)
 # Sets up the API client for communication with the OpenRouter service.
 # Exits gracefully if the required API key is not found.
 try:
-    if not OPENROUTER_API_KEY:
-        raise ValueError("OPENROUTER_API_KEY environment variable not set. Please set it before running the script.")
-
+    validate_config()
     client = OpenAI(
-        base_url=OPENROUTER_BASE_URL,
+        base_url=OPENROUTER_API_BASE,
         api_key=OPENROUTER_API_KEY,
     )
-except ValueError as e:
+except (ValueError, FileNotFoundError) as e:
     logger.critical(e)
-    exit(1) # Exit if API key is not set
+    exit(1) # Exit if configuration is invalid
 
 # --- Helper functions ---
 # This section contains reusable functions that encapsulate specific logic,
@@ -159,8 +160,7 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
 
     # The miniF2F project structure is required for verification, as it contains
     # dependent libraries like mathlib. We create the temp file within its source directory.
-    minif2f_root = BASE_DIR / "miniF2F"
-    src_dir = minif2f_root / "lean" / "src"
+    src_dir = MINIF2F_DIR / "lean" / "src"
     src_dir.mkdir(parents=True, exist_ok=True)  # Ensure src dir exists
 
     # Create a temporary file inside the miniF2F project's src directory
@@ -183,11 +183,11 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
         # standard way to build a Lean project file.
         process = subprocess.run(
             [LEAN_EXECUTABLE_PATH, "--make", f"lean/src/{temp_file_name}"],
-            cwd=str(minif2f_root),
+            cwd=str(MINIF2F_DIR),
             capture_output=True,
             text=True,
             check=False,
-            timeout=LEAN_VERIFICATION_TIMEOUT
+            timeout=LEAN_TIMEOUT
         )
 
         output = process.stdout + process.stderr
@@ -218,7 +218,7 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
         logger.error(f"  ❌ Lean executable '{LEAN_EXECUTABLE_PATH}' not found. Make sure Lean 3 is installed and in your PATH.")
         return False
     except subprocess.TimeoutExpired:
-        logger.error(f"  ❌ Lean verification timed out for {temp_file_path.name} after {LEAN_VERIFICATION_TIMEOUT} seconds.")
+        logger.error(f"  ❌ Lean verification timed out for {temp_file_path.name} after {LEAN_TIMEOUT} seconds.")
         return False
     except Exception as e:
         logger.error(f"  ❌ An unexpected error occurred during Lean verification for {temp_file_path.name}: {e}")
@@ -312,10 +312,10 @@ def generate_and_verify_proof(theorem: dict) -> bool:
 
         completion = _call_llm_with_retry(
             messages=messages,
-            model_name=MODEL_NAME,
+            model_name=DEFAULT_MODEL,
             extra_headers={
-                "HTTP-Referer": "https://math-agent-project.com",
-                "X-Title": "Lean Prover Agent",
+                "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
+                "X-Title": "Math Agent Vikhr",
             },
             max_tokens=2048,
             temperature=0.1,
@@ -345,30 +345,30 @@ def main():
     Parses command-line arguments, sets up the environment, reads theorems,
     runs the proof generation and verification loop, and prints a summary of the results.
     """
-    global MODEL_NAME
+    global DEFAULT_MODEL
 
     parser = argparse.ArgumentParser(description="Automated Lean 4 theorem proving with LLM.")
-    parser.add_argument("--subset_size", type=int, default=MICRO_SUBSET_SIZE_DEFAULT,
+    parser.add_argument("--subset_size", type=int, default=DEFAULT_SUBSET_SIZE,
                         help="Total number of tasks for the micro-subset.")
-    parser.add_argument("--json_file", type=Path, default=VALID_JSON_PATH_DEFAULT,
+    parser.add_argument("--json_file", type=Path, default=LEAN_OUTPUT_FILE,
                         help="Path to the JSON file containing theorems.")
-    parser.add_argument("--model", type=str, default=MODEL_NAME,
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
                         help="OpenRouter model name to use for proof generation.")
-    parser.add_argument("--log_level", type=str, default="INFO",
+    parser.add_argument("--log_level", type=str, default=DEFAULT_LOG_LEVEL,
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level (e.g., DEBUG for verbose output).")
     args = parser.parse_args()
 
     MICRO_SUBSET_SIZE = args.subset_size
     VALID_JSON_PATH = args.json_file
-    MODEL_NAME = args.model
+    DEFAULT_MODEL = args.model
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
     logger.info("Starting MiniF2F Lean Prover Benchmark with Claude Sonnet via OpenRouter...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{MODEL_NAME}', Log Level='{args.log_level}'")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}'")
     
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
         all_theorems = read_json_file(VALID_JSON_PATH)

@@ -1,18 +1,23 @@
 import json
 import re
-from pathlib import Path
 import logging
+from pathlib import Path
+
+# Import configuration
+from config import (
+    LEAN_SOURCE_FILE,
+    LEAN_OUTPUT_FILE,
+    LOG_FORMAT,
+    validate_config
+)
 
 # --- Logging Setup ---
 # Configures basic logging to provide visibility into the script's operations.
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format=LOG_FORMAT
 )
 logger = logging.getLogger(__name__)
-
-# Define project base directory to construct paths in a platform-independent way.
-BASE_DIR = Path(__file__).parent
 
 def read_lean_file(filepath: Path) -> str:
     """Reads the contents of a Lean file."""
@@ -94,23 +99,21 @@ def main():
     the process of reading the Lean file, processing its content to extract
     theorems, and writing the results to the JSON file.
     """
-    # Define input and output file paths. The script reads from a `.lean` file
-    # and writes the processed data to a `.json` file.
-    input_file = BASE_DIR / "miniF2F" / "lean" / "src" / "valid.lean"
-    output_file = BASE_DIR / "valid.json"
-
+    # Validate configuration
+    validate_config()
+    
     try:
         # Read file contents
-        lean_content = read_lean_file(input_file)
+        lean_content = read_lean_file(LEAN_SOURCE_FILE)
         
         # Process theorems
         theorems = process_lean_theorems(lean_content)
         
         # Save result to JSON
-        with output_file.open('w', encoding='utf-8') as f:
+        with LEAN_OUTPUT_FILE.open('w', encoding='utf-8') as f:
             json.dump(theorems, f, indent=2, ensure_ascii=False)
         
-        logger.info(f"Successfully processed {len(theorems)} theorems and saved to {output_file}")
+        logger.info(f"Successfully processed {len(theorems)} theorems and saved to {LEAN_OUTPUT_FILE}")
         
     except Exception as e:
         logger.error(f"An error occurred: {e}")
