@@ -1,6 +1,12 @@
 # Math Agent Vikhr - Automated Lean Theorem Prover
 
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 This project uses Large Language Models (LLMs) to automatically generate proofs for mathematical theorems written in the Lean 3 programming language. It is designed to work with the `miniF2F` benchmark, a collection of formal-to-formal theorems from high-school math competitions.
+
+## 📄 License
+
+This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details. This license aligns with the miniF2F/lean folder which is also released under the Apache License to maintain compatibility with Lean's mathlib license.
 
 ## 🏗️ Project Structure
 
@@ -206,3 +212,38 @@ The system provides detailed logging and reporting:
 2. Use centralized configuration
 3. Add proper logging
 4. Include error handling
+
+## 📄 License
+
+This project is licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at:
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
+
+### License Compatibility
+
+This project uses the Apache License 2.0 to maintain compatibility with:
+- **miniF2F/lean**: The mathematical problems and Lean formalizations are also under Apache License 2.0
+- **Lean's mathlib**: The Lean mathematical library uses Apache License 2.0
+- **Open source ecosystem**: Apache License 2.0 is widely compatible with other open source licenses
+
+### Copyright Notice
+
+To apply the Apache License to your work, attach the following boilerplate notice, with the fields enclosed by brackets "[]" replaced with your own identifying information:
+
+```
+Copyright [yyyy] [name of copyright owner]
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
