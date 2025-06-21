@@ -228,6 +228,24 @@ This project uses the Apache License 2.0 to maintain compatibility with:
 - **Lean's mathlib**: The Lean mathematical library uses Apache License 2.0
 - **Open source ecosystem**: Apache License 2.0 is widely compatible with other open source licenses
 
+### Attribution
+
+This project uses the **MiniF2F** benchmark dataset for mathematical theorem proving evaluation. MiniF2F is a formal mathematics benchmark consisting of exercise statements from olympiads (AMC, AIME, IMO) and high-school mathematics.
+
+**Citation for MiniF2F:**
+```
+@article{zheng2021minif2f,
+  title={MiniF2F: a cross-system benchmark for formal Olympiad-level mathematics},
+  author={Zheng, Kunhao and Han, Jesse Michael and Polu, Stanislas},
+  journal={arXiv preprint arXiv:2109.00110},
+  year={2021}
+}
+```
+
+**MiniF2F Repository:** https://github.com/openai/miniF2F
+
+The Lean formalizations used in this project are from the `miniF2F/lean` folder, which is released under the Apache License 2.0 to align with Lean's mathlib license.
+
 ### Copyright Notice
 
 To apply the Apache License to your work, attach the following boilerplate notice, with the fields enclosed by brackets "[]" replaced with your own identifying information:
