@@ -14,14 +14,13 @@ The project has been reorganized with a modular, maintainable architecture:
 
 ```
 math_agent_vikhr/
-├── 📄 config.py                    # Centralized configuration management
-├── 📁 agents/                      # AI agents package
+├── 📄 config.py                   # Centralized configuration management
+├── 📁 agents/                     # AI agents package
 │   ├── 📄 __init__.py             # Package initialization
 │   ├── 📄 math_prover_agent.py    # Main theorem proving agent
 │   └── 📄 tools.py                # Custom tools and utilities
 ├── 📄 process_lean.py             # Lean file parser and processor
-├── 📄 benchmark_sonnet_only.py    # Main benchmark script
-├── 📄 test_new_structure.py       # Structure testing script
+├── 📄 benchmark_sonnet_only.py    # Benchmark script for testing sonnet
 ├── 📄 README.md                   # This documentation
 ├── 📄 requirements.txt            # Python dependencies
 ├── 📄 valid.json                  # Processed theorems dataset
@@ -93,17 +92,12 @@ The `agents/` package contains all AI agent logic:
    export OPENROUTER_API_KEY="your_key_here"
    ```
 
-2. **Test New Structure**:
-   ```bash
-   python test_new_structure.py
-   ```
-
-3. **Process Lean Files**:
+2. **Process Lean Files**:
    ```bash
    python process_lean.py
    ```
 
-4. **Run Benchmark**:
+3. **Run Benchmark**:
    ```bash
    python benchmark_sonnet_only.py
    ```
