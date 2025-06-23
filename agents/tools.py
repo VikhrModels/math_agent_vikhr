@@ -53,6 +53,15 @@ class VerifyLeanProof(Tool):
         - output: string containing the full compiler output (stdout + stderr)
     """
     
+    inputs = {
+        "theorem_statement": {
+            "type": "string",
+            "description": "The complete Lean theorem statement to verify. This should be a full theorem definition that may contain `:= sorry` or `:= begin sorry end`."
+        }
+    }
+    
+    output_type = "object"
+    
     def forward(self, theorem_statement: str) -> Dict[str, Any]:
         """
         Verifies a Lean proof by creating a temporary file and compiling it.
@@ -74,32 +83,29 @@ class VerifyLeanProof(Tool):
                 "output": "Error: Empty theorem statement provided"
             }
         
-        # Check if the statement contains a sorry placeholder
-        if "sorry" not in theorem_statement.lower():
-            logger.warning("No 'sorry' placeholder found in theorem statement")
-            logger.debug(f"Theorem statement: {theorem_statement[:200]}...")
-            return {
-                "success": False,
-                "output": "Error: No 'sorry' placeholder found in theorem statement"
-            }
-        
-        # Find the part of the statement before the proof begins
-        # The statements typically end with `:= sorry` or `:= begin sorry end`
-        statement_base_match = re.search(r'(.*):=\s*(begin\s*sorry\s*end|sorry)', theorem_statement, re.DOTALL)
-        if not statement_base_match:
-            logger.error("Could not find `:= sorry` or `:= begin sorry end` in the theorem statement")
-            logger.debug(f"Full statement: {theorem_statement}")
-            return {
-                "success": False,
-                "output": "Error: Could not find `:= sorry` or `:= begin sorry end` in the theorem statement"
-            }
-        
-        statement_base = statement_base_match.group(1).strip()
-        logger.info(f"Extracted statement base, length: {len(statement_base)} characters")
-        
-        # Create complete theorem with generated proof
-        # Note: The theorem_statement should already contain the proof, not just the base
-        full_lean_code = theorem_statement
+        # Check if the proof contains 'sorry' - this means it's incomplete
+        if "sorry" in theorem_statement.lower():
+            # Check if sorry is the only content between begin and end
+            begin_end_match = re.search(r'begin\s*(.*?)\s*end', theorem_statement, re.DOTALL | re.IGNORECASE)
+            if begin_end_match:
+                proof_content = begin_end_match.group(1).strip().lower()
+                # If the only content is 'sorry' (with possible whitespace), then it's incomplete
+                if proof_content == 'sorry':
+                    logger.warning("Proof contains only 'sorry' - marking as incomplete")
+                    return {
+                        "success": False,
+                        "output": "Error: Proof contains only 'sorry' and is incomplete"
+                    }
+                else:
+                    logger.info("Proof contains 'sorry' but also other tactics - proceeding with verification")
+            else:
+                # If we can't find begin/end structure, check if sorry is the only content
+                if theorem_statement.lower().strip() == 'sorry':
+                    logger.warning("Theorem contains only 'sorry' - marking as incomplete")
+                    return {
+                        "success": False,
+                        "output": "Error: Theorem contains only 'sorry' and is incomplete"
+                    }
         
         # Set up file paths
         src_dir = MINIF2F_DIR / "lean" / "src"
@@ -119,7 +125,7 @@ class VerifyLeanProof(Tool):
             # Write the complete Lean code to the temporary file
             with temp_file_path.open("w", encoding='utf-8') as f:
                 f.write(lean_imports)
-                f.write(full_lean_code)
+                f.write(theorem_statement)
             
             logger.info(f"Successfully wrote Lean code to {temp_file_path}")
             logger.debug(f"File size: {temp_file_path.stat().st_size} bytes")
@@ -140,6 +146,9 @@ class VerifyLeanProof(Tool):
             logger.info(f"Lean compilation completed with return code: {process.returncode}")
             logger.debug(f"Full Lean output:\n{output}")
             
+            # Clean up the output by removing temporary file paths
+            cleaned_output = self._clean_output(output, temp_file_name)
+            
             # Check for compilation success
             if process.returncode != 0 or "error:" in output.lower():
                 logger.warning("Lean compilation failed")
@@ -152,7 +161,7 @@ class VerifyLeanProof(Tool):
                 
                 return {
                     "success": False,
-                    "output": output
+                    "output": cleaned_output
                 }
             
             # Check if .olean file was produced (indicator of successful compilation)
@@ -160,13 +169,13 @@ class VerifyLeanProof(Tool):
                 logger.warning("Compilation appeared successful but .olean file was not produced")
                 return {
                     "success": False,
-                    "output": output + "\nWarning: .olean file was not produced despite no errors"
+                    "output": cleaned_output + "\nWarning: .olean file was not produced despite no errors"
                 }
             
             logger.info("Lean compilation successful!")
             return {
                 "success": True,
-                "output": output
+                "output": cleaned_output
             }
             
         except FileNotFoundError:
@@ -202,6 +211,37 @@ class VerifyLeanProof(Tool):
             if olean_path.exists():
                 olean_path.unlink()
                 logger.debug(f"Removed temporary .olean file: {olean_path}")
+    
+    def _clean_output(self, output: str, temp_file_name: str) -> str:
+        """
+        Clean up the Lean output by removing temporary file paths and formatting errors properly.
+        
+        Args:
+            output: Raw output from Lean compiler
+            temp_file_name: Name of the temporary file to remove from output
+            
+        Returns:
+            Cleaned output string
+        """
+        # Remove the temporary file path from all lines
+        lines = output.splitlines()
+        cleaned_lines = []
+        
+        for line in lines:
+            # Remove the full path to the temporary file, keeping only line:column info
+            if temp_file_name in line:
+                # Extract line:column:message format
+                parts = line.split(temp_file_name)
+                if len(parts) >= 2:
+                    # Keep everything after the filename (line:column:message)
+                    cleaned_line = parts[1].lstrip(':')
+                    cleaned_lines.append(cleaned_line)
+                else:
+                    cleaned_lines.append(line)
+            else:
+                cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
 
 
 # Create an instance of the tool

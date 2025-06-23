@@ -31,7 +31,7 @@ AVAILABLE_MODELS = [
 # --- Lean Configuration ---
 LEAN_SOURCE_FILE = MINIF2F_DIR / "lean" / "src" / "valid.lean"
 LEAN_OUTPUT_FILE = BASE_DIR / "valid.json"
-LEAN_TIMEOUT = 30  # seconds for Lean compilation
+LEAN_TIMEOUT = 120  # seconds for Lean compilation (increased from 30)
 
 # --- Agent Configuration ---
 DEFAULT_SUBSET_SIZE = 10
