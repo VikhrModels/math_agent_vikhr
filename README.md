@@ -259,3 +259,74 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ```
+
+## Features
+
+- Agent-based theorem proving using smolagents
+- Lean 4 proof verification
+- Support for multiple LLM models via OpenRouter
+- Stratified sampling for representative testing
+- Comprehensive logging and error handling
+
+## Setup
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+2. Set your OpenRouter API key:
+```bash
+export OPENROUTER_API_KEY="your_api_key_here"
+```
+
+3. Initialize the miniF2F submodule:
+```bash
+git submodule update --init --recursive
+```
+
+## Usage
+
+### Agent-based Theorem Proving
+
+Run the agent-based benchmark:
+
+```bash
+python agents/math_prover_agent.py
+```
+
+#### Agent Configuration Options
+
+You can control the agent's behavior with these parameters:
+
+- `--max_iterations`: Maximum number of agent iterations per theorem (default: 5)
+- `--max_tool_calls`: Maximum number of tool calls per theorem (default: 10)  
+- `--agent_timeout`: Timeout in seconds for agent execution per theorem (default: 300)
+- `--subset_size`: Number of theorems to test (default: 10)
+- `--log_level`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+
+Example with custom limits:
+```bash
+python agents/math_prover_agent.py \
+  --max_iterations 3 \
+  --max_tool_calls 5 \
+  --agent_timeout 120 \
+  --subset_size 5 \
+  --log_level DEBUG
+```
+
+#### Understanding Agent Limits
+
+- **max_iterations**: Controls how many times the agent can "think" and generate new approaches
+- **max_tool_calls**: Limits the number of times the agent can call the `verify_lean_proof` tool
+- **agent_timeout**: Prevents the agent from running indefinitely on a single theorem
+
+Lower limits make the agent faster but may reduce success rate. Higher limits give the agent more chances but take longer.
+
+### Traditional LLM Benchmark
+
+Run the traditional benchmark (without agent framework):
+
+```bash
+python benchmark_sonnet_only.py
+```
