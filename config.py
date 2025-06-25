@@ -41,6 +41,9 @@ DEFAULT_JSON_FILE = "valid.json"
 # Agent step limit
 DEFAULT_MAX_STEPS = 5  # Maximum number of agent steps per theorem
 
+# Planning interval for agent (how often to run planning phase)
+DEFAULT_PLANNING_INTERVAL = 2  # Run planning every N steps
+
 # --- Logging Configuration ---
 LOG_FILE = LOG_DIR / "llm_requests.log"
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
@@ -89,6 +92,7 @@ __all__ = [
     "DEFAULT_LOG_LEVEL",
     "DEFAULT_JSON_FILE",
     "DEFAULT_MAX_STEPS",
+    "DEFAULT_PLANNING_INTERVAL",
     "LOG_FILE",
     "LOG_FORMAT",
     "validate_config",

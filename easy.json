@@ -1,0 +1,7 @@
+[
+    {
+    "name": "mathd_algebra_10",
+    "statement": "theorem mathd_algebra_10 :\n  abs ((120 : ℝ)/100 * 30 - 130/100 * 20) = 10 :=\nbegin\n  sorry\nend",
+    "is_solved": true
+    }
+]

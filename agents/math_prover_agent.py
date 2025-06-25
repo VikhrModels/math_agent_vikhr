@@ -13,7 +13,7 @@ from config import (
     DEFAULT_MODEL, OPENROUTER_API_BASE, OPENROUTER_API_KEY, 
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
     DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL, 
-    DEFAULT_MAX_STEPS,
+    DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
     validate_config
 )
 from agents.tools import verify_lean_proof
@@ -85,11 +85,12 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     logger.info(f"Selected {len(micro_subset)} theorems for testing")
     return micro_subset
 
-def create_agent(max_steps: int = DEFAULT_MAX_STEPS):
+def create_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DEFAULT_PLANNING_INTERVAL):
     """
     Create and configure the math prover agent.
     Args:
         max_steps: Maximum number of agent steps per theorem
+        planning_interval: Interval for agent planning steps
     """
     try:
         validate_config()
@@ -106,10 +107,11 @@ def create_agent(max_steps: int = DEFAULT_MAX_STEPS):
     agent = CodeAgent(
         tools=[verify_lean_proof], 
         model=model,
-        max_steps=max_steps
+        max_steps=max_steps,
+        planning_interval=planning_interval
     )
     
-    logger.info(f"Created agent with max_steps={max_steps}")
+    logger.info(f"Created agent with max_steps={max_steps}, planning_interval={planning_interval}")
     return agent
 
 def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS) -> bool:
@@ -132,10 +134,11 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"CRITICAL: You must ONLY generate Lean code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n\n"
             f"WORKFLOW:\n"
             f"1. Look at the theorem statement\n"
-            f"2. Generate a complete Lean theorem with proper tactics (replace 'sorry' with Lean tactics like norm_num, simp, rw, exact, etc.)\n"
-            f"3. Use verify_lean_proof(theorem_statement) to check your Lean code\n"
-            f"4. If verification fails, fix the Lean code and try again\n"
-            f"5. Return ONLY the final verified Lean theorem\n\n"
+            f"2. Periodically (every planning_interval steps), perform a planning phase: generate and update a list of possible proof strategies (hypotheses) for the theorem.\n"
+            f"3. For each hypothesis, attempt to generate a complete Lean theorem with proper tactics (replace 'sorry' with Lean tactics like norm_num, simp, rw, exact, etc.)\n"
+            f"4. Use verify_lean_proof(theorem_statement) to check your Lean code\n"
+            f"5. If verification fails, update your plan and try a new hypothesis or fix the Lean code and try again\n"
+            f"6. Return ONLY the final verified Lean theorem\n\n"
             f"LEAN TACTICS YOU CAN USE:\n"
             f"- norm_num: for numerical calculations\n"
             f"- simp: for simplification\n"
@@ -146,7 +149,9 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"- induction: for induction\n"
             f"- have: for introducing new hypotheses\n"
             f"- proof blocks: use {{ }} for subproofs\n"
-            f"- ring: for ring theory\n\n"
+            f"- ring: for ring theory\n"
+            f"- linarith: for linear arithmetic\n"
+            f"- etc.\n\n"
             f"IMPORTANT: Do not use 'sorry' anywhere in your proof, including inside proof blocks.\n\n"
             f"EXAMPLE OF CORRECT APPROACH:\n"
             f"theorem_statement = '''theorem example : 2 + 2 = 4 := begin norm_num end'''\n"
@@ -161,14 +166,36 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
         )
 
         result = agent.run(prompt)
-        if result and 'theorem' in result and 'begin' in result and 'end' in result:
-            logger.info(f"✅ Agent successfully generated proof for {theorem['name']}")
-            logger.debug(f"Generated proof:\n{result}")
-            return True
-        else:
-            logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']}")
+        # Если результат None — неуспех
+        if result is None:
+            logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (no result)")
             logger.debug(f"Agent result:\n{result}")
             return False
+        # Если результат — dict, только success==True — успех, иначе сразу return False
+        if isinstance(result, dict):
+            if result.get('success') is True:
+                logger.info(f"✅ Agent successfully generated proof for {theorem['name']}")
+                logger.debug(f"Agent result:\n{result}")
+                return True
+            else:
+                logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (agent returned success: False or error)")
+                logger.debug(f"Agent result:\n{result}")
+                return False
+        # Если результат — строка с Lean-доказательством, проверить его через verify_lean_proof
+        if isinstance(result, str) and 'theorem' in result and 'begin' in result and 'end' in result:
+            verification = verify_lean_proof(result)
+            if isinstance(verification, dict) and verification.get('success') is True:
+                logger.info(f"✅ Agent successfully generated proof for {theorem['name']} (after verification)")
+                logger.debug(f"Agent result:\n{result}")
+                return True
+            else:
+                logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (verification failed)")
+                logger.debug(f"Verification result:\n{verification}")
+                return False
+        # Всё остальное — неуспех
+        logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (no valid result)")
+        logger.debug(f"Agent result:\n{result}")
+        return False
     except Exception as e:
         logger.error(f"❌ Error during agent execution for {theorem['name']}: {e}")
         return False
@@ -187,16 +214,19 @@ def main():
                         help="Set the logging level.")
     parser.add_argument("--max_steps", type=int, default=DEFAULT_MAX_STEPS,
                         help="Maximum number of agent steps per theorem.")
+    parser.add_argument("--planning_interval", type=int, default=DEFAULT_PLANNING_INTERVAL,
+                        help=f"Interval for agent planning steps (default: {DEFAULT_PLANNING_INTERVAL}). Lower = more frequent planning.")
     args = parser.parse_args()
 
     MICRO_SUBSET_SIZE = args.subset_size
     VALID_JSON_PATH = args.json_file
     MAX_STEPS = args.max_steps
+    PLANNING_INTERVAL = args.planning_interval
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}")
     
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +250,7 @@ def main():
         logger.warning("No tasks selected for the micro-subset. Exiting.")
         return
 
-    agent = create_agent(max_steps=MAX_STEPS)
+    agent = create_agent(max_steps=MAX_STEPS, planning_interval=PLANNING_INTERVAL)
 
     logger.info("\n--- Running Agent-based Theorem Proving on Micro-Subset ---")
     results = {}
