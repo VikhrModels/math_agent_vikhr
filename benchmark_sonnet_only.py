@@ -27,9 +27,6 @@ from config import (
     validate_config
 )
 
-# Import agents
-from agents import create_math_prover_agent
-
 # --- Constants and default configuration ---
 # This section defines constants and default settings for the script.
 # These can be customized as needed.
@@ -89,7 +86,11 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     """
     Selects a micro-subset of tasks while preserving the ratio of solved/unsolved tasks.
     This ensures that testing subsets are representative of the larger dataset.
+    If subset_size <= 0, returns the full dataset.
     """
+    if subset_size <= 0:
+        logger.info(f"Special value for subset_size={subset_size}: using the full dataset ({len(all_theorems)} tasks).")
+        return all_theorems
     solved_theorems = [t for t in all_theorems if t['is_solved']]
     unsolved_theorems = [t for t in all_theorems if not t['is_solved']]
 
@@ -349,7 +350,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Automated Lean 4 theorem proving with LLM.")
     parser.add_argument("--subset_size", type=int, default=DEFAULT_SUBSET_SIZE,
-                        help="Total number of tasks for the micro-subset.")
+                        help="Total number of tasks for the micro-subset. Use 0 or -1 to use the full dataset.")
     parser.add_argument("--json_file", type=Path, default=LEAN_OUTPUT_FILE,
                         help="Path to the JSON file containing theorems.")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
@@ -380,7 +381,12 @@ def main():
         logger.warning("No theorems found in the JSON file. Exiting.")
         return
 
-    micro_subset = select_micro_subset_stratified(all_theorems, MICRO_SUBSET_SIZE)
+    # Special value: use full dataset if subset_size <= 0
+    if MICRO_SUBSET_SIZE <= 0:
+        micro_subset = all_theorems
+        logger.info(f"Special value for subset_size={MICRO_SUBSET_SIZE}: using the full dataset ({len(all_theorems)} tasks).")
+    else:
+        micro_subset = select_micro_subset_stratified(all_theorems, MICRO_SUBSET_SIZE)
 
     if not micro_subset:
         logger.warning("No tasks selected for the micro-subset. Exiting.")

@@ -31,12 +31,18 @@ AVAILABLE_MODELS = [
 # --- Lean Configuration ---
 LEAN_SOURCE_FILE = MINIF2F_DIR / "lean" / "src" / "valid.lean"
 LEAN_OUTPUT_FILE = BASE_DIR / "valid.json"
-LEAN_TIMEOUT = 30  # seconds for Lean compilation
+LEAN_TIMEOUT = 120  # seconds for Lean compilation (increased from 30)
 
 # --- Agent Configuration ---
 DEFAULT_SUBSET_SIZE = 10
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_JSON_FILE = "valid.json"
+
+# Agent step limit
+DEFAULT_MAX_STEPS = 5  # Maximum number of agent steps per theorem
+
+# Planning interval for agent (how often to run planning phase)
+DEFAULT_PLANNING_INTERVAL = 2  # Run planning every N steps
 
 # --- Logging Configuration ---
 LOG_FILE = LOG_DIR / "llm_requests.log"
@@ -85,6 +91,8 @@ __all__ = [
     "DEFAULT_SUBSET_SIZE",
     "DEFAULT_LOG_LEVEL",
     "DEFAULT_JSON_FILE",
+    "DEFAULT_MAX_STEPS",
+    "DEFAULT_PLANNING_INTERVAL",
     "LOG_FILE",
     "LOG_FORMAT",
     "validate_config",
