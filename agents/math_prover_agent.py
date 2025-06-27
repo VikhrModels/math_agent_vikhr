@@ -4,6 +4,7 @@ import random
 import logging
 import argparse
 from pathlib import Path
+import tiktoken
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -114,13 +115,15 @@ def create_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DE
     logger.info(f"Created agent with max_steps={max_steps}, planning_interval={planning_interval}")
     return agent
 
-def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS) -> bool:
+def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS, enc=None, token_counter=None) -> bool:
     """
     Uses the agent to prove a single theorem.
     Args:
         agent: The configured math prover agent
         theorem: Dictionary containing theorem data
         max_steps: Maximum number of agent steps per theorem
+        enc: tiktoken encoder (optional)
+        token_counter: dict with key 'total' to accumulate tokens (optional)
     Returns:
         bool: True if the theorem was successfully proven, False otherwise
     """
@@ -165,7 +168,24 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"Prove this theorem:\n{theorem['statement']}"
         )
 
+        # Подсчет токенов для промпта
+        if enc is not None and token_counter is not None:
+            prompt_tokens = len(enc.encode(prompt))
+            token_counter['total'] += prompt_tokens
+            logger.debug(f"Prompt tokens: {prompt_tokens}")
+
         result = agent.run(prompt)
+        # Подсчет токенов для ответа
+        if enc is not None and token_counter is not None and result is not None:
+            if isinstance(result, str):
+                result_tokens = len(enc.encode(result))
+            elif isinstance(result, dict):
+                # Сериализуем dict в строку для подсчета токенов
+                result_tokens = len(enc.encode(json.dumps(result)))
+            else:
+                result_tokens = 0
+            token_counter['total'] += result_tokens
+            logger.debug(f"Result tokens: {result_tokens}")
         # Если результат None — неуспех
         if result is None:
             logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (no result)")
@@ -218,6 +238,14 @@ def main():
                         help=f"Interval for agent planning steps (default: {DEFAULT_PLANNING_INTERVAL}). Lower = more frequent planning.")
     args = parser.parse_args()
 
+    # --- tiktoken setup ---
+    try:
+        enc = tiktoken.encoding_for_model("gpt-4o")
+    except Exception as e:
+        logger.warning(f"tiktoken not available or failed to load: {e}")
+        enc = None
+    token_counter = {'total': 0}
+
     MICRO_SUBSET_SIZE = args.subset_size
     VALID_JSON_PATH = args.json_file
     MAX_STEPS = args.max_steps
@@ -257,7 +285,7 @@ def main():
     
     for i, theorem in enumerate(micro_subset):
         logger.info(f"\nProcessing task {i+1}/{len(micro_subset)}: {theorem['name']}")
-        success = prove_theorem_with_agent(agent, theorem, max_steps=MAX_STEPS)
+        success = prove_theorem_with_agent(agent, theorem, max_steps=MAX_STEPS, enc=enc, token_counter=token_counter)
         results[theorem['name']] = success
 
     logger.info("\n--- Summary of Results ---")
@@ -276,6 +304,12 @@ def main():
         logger.info(f"Pass rate: {success_rate:.2f}%")
     else:
         logger.info("No tasks processed.")
+
+    # --- Token usage summary ---
+    if enc is not None:
+        logger.info(f"Total tokens used for prompts and results: {token_counter['total']}")
+    else:
+        logger.info("Token counting was not available (tiktoken not installed or failed to load).")
 
 if __name__ == "__main__":
     main()
