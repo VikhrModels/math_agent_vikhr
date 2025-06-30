@@ -6,6 +6,10 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, Any
+import requests
+import brotli
+import json
+from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -243,6 +247,102 @@ class VerifyLeanProof(Tool):
         
         return '\n'.join(cleaned_lines)
 
+class MoogleSemanticSearch(Tool):
+    """
+    A tool for semantic search of theorems, lemmas, structures, and more via moogle.ai.
+
+    This tool sends a query to moogle.ai's semantic search API and returns a filtered JSON response
+    containing relevant mathematical declarations (theorems, definitions, etc.).
+
+    Args:
+        query: The search query string (e.g., theorem name, concept, or keywords).
+
+    Returns:
+        A dictionary with a 'data' field containing a list of relevant declarations (each with keys:
+        declarationName, declarationCode, declarationDocstring, declarationType, sourceCodeUrl, mathlibPath).
+    """
+    name = "moogle_semantic_search"
+    description = (
+        "Performs a semantic search for theorems, lemmas, structures, etc. using moogle.ai's API. "
+        "Returns a filtered JSON response with relevant declarations."
+    )
+    inputs = {
+        "query": {
+            "type": "string",
+            "description": "The search query string (e.g., theorem name, concept, or keywords)."
+        }
+    }
+    output_type = "object"
+
+    def forward(self, query: str) -> dict:
+        """
+        Performs a semantic search request to moogle.ai and returns filtered results as JSON.
+        Logs all steps and errors. Handles brotli decoding. Does not write to disk.
+        """
+        logger.info(f"[MoogleSemanticSearch] Starting semantic search for query: '{query}'")
+        url = 'https://www.moogle.ai/api/search'
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Referer': 'https://www.moogle.ai/search/raw?q=cursor',
+            'Content-Type': 'application/json',
+            'Origin': 'https://www.moogle.ai',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'DNT': '1',
+            'Sec-GPC': '1',
+            'Priority': 'u=4',
+        }
+        data = [{"isFind": False, "contents": query}]
+        try:
+            logger.info("[MoogleSemanticSearch] Sending POST request to moogle.ai API...")
+            resp = requests.post(url, headers=headers, json=data)
+            resp.raise_for_status()
+            encoding = resp.headers.get('content-encoding', '').lower()
+            raw = resp.content
+            text = None
+            if 'br' in encoding:
+                try:
+                    raw = brotli.decompress(raw)
+                    text = raw.decode('utf-8')
+                    logger.info("[MoogleSemanticSearch] Brotli decoding successful.")
+                except Exception as e:
+                    logger.error(f"[MoogleSemanticSearch] Brotli decode error: {e}")
+                    logger.debug(f"[MoogleSemanticSearch] Raw response bytes: {raw}")
+                    try:
+                        text = resp.text
+                    except Exception as e2:
+                        logger.error(f"[MoogleSemanticSearch] Error getting resp.text: {e2}")
+                        text = None
+            else:
+                text = resp.text
+            if text is not None:
+                try:
+                    resp_json = json.loads(text)
+                    allowed = {"declarationName", "declarationCode", "declarationDocstring", "declarationType", "sourceCodeUrl", "mathlibPath"}
+                    if 'data' in resp_json and isinstance(resp_json['data'], list):
+                        for i, item in enumerate(resp_json['data']):
+                            if isinstance(item, dict):
+                                resp_json['data'][i] = {k: v for k, v in item.items() if k in allowed}
+                    logger.info(f"[MoogleSemanticSearch] Successfully parsed and filtered response. Returned {len(resp_json.get('data', []))} items.")
+                    return resp_json
+                except Exception as e:
+                    logger.error(f"[MoogleSemanticSearch] JSON parse error: {e}")
+                    logger.debug(f"[MoogleSemanticSearch] Raw response text: {text}")
+                    return {"error": f"JSON parse error: {e}", "raw": text}
+            else:
+                logger.error("[MoogleSemanticSearch] No text response to parse.")
+                return {"error": "No text response to parse."}
+        except Exception as e:
+            logger.error(f"[MoogleSemanticSearch] Request error: {e}")
+            return {"error": str(e)}
 
 # Create an instance of the tool
 verify_lean_proof = VerifyLeanProof()
+
+# Register the tool instance
+moogle_semantic_search = MoogleSemanticSearch()
