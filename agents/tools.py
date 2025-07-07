@@ -258,13 +258,33 @@ class MoogleSemanticSearch(Tool):
         query: The search query string (e.g., theorem name, concept, or keywords).
 
     Returns:
-        A dictionary with a 'data' field containing a list of relevant declarations (each with keys:
-        declarationName, declarationCode, declarationDocstring, declarationType, sourceCodeUrl, mathlibPath).
+        A dictionary with a 'data' field containing a list of relevant declarations. Each declaration is a dict with the following keys:
+            - declarationName: str (e.g., 'Real.tan_pi_div_six')
+            - declarationCode: str (Lean code for the declaration)
+            - declarationDocstring: str (docstring or description, may be empty)
+            - declarationType: str (e.g., 'theorem', 'definition', etc.)
+            - sourceCodeUrl: str (URL to the source code in mathlib)
+            - mathlibPath: str (path to the file in mathlib)
+        Example output:
+        {
+            'data': [
+                {
+                    'declarationName': 'Real.tan_pi_div_six',
+                    'declarationCode': 'theorem tan_pi_div_six : tan (π / 6) = 1 / sqrt 3 := by ...',
+                    'declarationDocstring': '/-- The tangent of π/6 is 1/√3. -/',
+                    'declarationType': 'theorem',
+                    'sourceCodeUrl': 'https://github.com/leanprover-community/mathlib4/...',
+                    'mathlibPath': 'Mathlib/Analysis/SpecialFunctions/Trigonometric/Basic.lean'
+                },
+                ...
+            ]
+        }
     """
     name = "moogle_semantic_search"
     description = (
         "Performs a semantic search for theorems, lemmas, structures, etc. using moogle.ai's API. "
-        "Returns a filtered JSON response with relevant declarations."
+        "Returns a dictionary with a 'data' field containing a list of relevant declarations. "
+        "Each declaration is a dict with: declarationName, declarationCode, declarationDocstring, declarationType, sourceCodeUrl, mathlibPath."
     )
     inputs = {
         "query": {

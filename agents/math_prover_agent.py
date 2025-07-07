@@ -17,7 +17,7 @@ from config import (
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
     validate_config
 )
-from agents.tools import verify_lean_proof
+from agents.tools import verify_lean_proof, moogle_semantic_search
 
 # --- Logging setup ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -86,12 +86,12 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     logger.info(f"Selected {len(micro_subset)} theorems for testing")
     return micro_subset
 
-def create_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DEFAULT_PLANNING_INTERVAL):
+def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DEFAULT_PLANNING_INTERVAL):
     """
-    Create and configure the math prover agent.
-    Args:
-        max_steps: Maximum number of agent steps per theorem
-        planning_interval: Interval for agent planning steps
+    Create a multi-agent system for theorem proving:
+    - Idea generator agent: receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent.
+    - Code generator agent: generates Lean code from the strategy and calls the Lean compiler.
+    Returns the main agent (idea generator).
     """
     try:
         validate_config()
@@ -105,15 +105,37 @@ def create_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DE
         api_key=OPENROUTER_API_KEY,
     )
 
-    agent = CodeAgent(
-        tools=[verify_lean_proof], 
+    # Code generator agent (uses only the Lean proof verifier)
+    code_agent = CodeAgent(
+        tools=[verify_lean_proof],
         model=model,
-        max_steps=max_steps,
-        planning_interval=planning_interval
+        max_steps=10,
+        planning_interval=1,
+        name="code_generator",
+        description=(
+            "Generates Lean code from a proof strategy and calls the Lean compiler. "
+            "Returns the code and compiler output. "
+            "IMPORTANT RULES: Never write or execute Python code. Only output valid Lean code. "
+            "Your output must be a complete Lean theorem statement and proof. "
+            "EXAMPLE: theorem example : 2 + 2 = 4 := begin norm_num end. "
+            "Do NOT include any Python code, comments, or analysis - only Lean code. "
+            "IMPORTANT: The proof MUST be formatted using 'begin' and 'end' syntax."
+        )
     )
-    
-    logger.info(f"Created agent with max_steps={max_steps}, planning_interval={planning_interval}")
-    return agent
+
+    # Idea generator agent (can search for lemmas and call the code generator)
+    idea_agent = CodeAgent(
+        tools=[moogle_semantic_search],
+        model=model,
+        max_steps=10,
+        planning_interval=1,
+        managed_agents=[code_agent],
+        name="idea_generator",
+        description="Receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent."
+    )
+
+
+    return idea_agent
 
 def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS, enc=None, token_counter=None) -> bool:
     """
@@ -133,67 +155,112 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
 
     try:
         prompt = (
-            f"You are a Lean 3.42.1 theorem prover. Your task is to generate Lean code that proves the given theorem.\n\n"
-            f"CRITICAL: You must ONLY generate Lean code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n\n"
-            f"WORKFLOW:\n"
-            f"1. Look at the theorem statement\n"
-            f"2. Periodically (every planning_interval steps), perform a planning phase: generate and update a list of possible proof strategies (hypotheses) for the theorem.\n"
-            f"3. For each hypothesis, attempt to generate a complete Lean theorem with proper tactics (replace 'sorry' with Lean tactics like norm_num, simp, rw, exact, etc.)\n"
-            f"4. Use verify_lean_proof(theorem_statement) to check your Lean code\n"
-            f"5. If verification fails, update your plan and try a new hypothesis or fix the Lean code and try again\n"
-            f"6. Return ONLY the final verified Lean theorem\n\n"
-            f"LEAN TACTICS YOU CAN USE:\n"
-            f"- norm_num: for numerical calculations\n"
-            f"- simp: for simplification\n"
-            f"- rw: for rewriting with hypotheses\n"
-            f"- exact: for exact proofs\n"
-            f"- apply: for applying lemmas\n"
-            f"- cases: for case analysis\n"
-            f"- induction: for induction\n"
-            f"- have: for introducing new hypotheses\n"
-            f"- proof blocks: use {{ }} for subproofs\n"
-            f"- ring: for ring theory\n"
-            f"- linarith: for linear arithmetic\n"
-            f"- etc.\n\n"
-            f"IMPORTANT: Do not use 'sorry' anywhere in your proof, including inside proof blocks.\n\n"
-            f"EXAMPLE OF CORRECT APPROACH:\n"
-            f"theorem_statement = '''theorem example : 2 + 2 = 4 := begin norm_num end'''\n"
-            f"result = verify_lean_proof(theorem_statement)\n\n"
-            f"DO NOT DO THIS (WRONG):\n"
-            f"# Mathematical analysis in Python\n"
-            f"for i in range(10):\n"
-            f"    print(i)\n\n"
-            f"Your response must be ONLY Lean code starting with 'theorem' and ending with 'end'.\n"
-            f"No Python code, no comments, no explanations.\n\n"
-            f"Prove this theorem:\n{theorem['statement']}"
+            f"You are an expert Lean 3.42.1 theorem prover agent. You will be given a mathematical theorem to prove.\n"
+            f"You have access to the following tools, which you can call as Python functions in your code blocks.\n"
+            f"To solve the task, proceed in a series of steps, in a cycle of 'Thought:', 'Code:', and 'Observation:' sequences.\n\n"
+
+            f"At each step, in the 'Thought:' sequence, explain your reasoning and which tools you want to use.\n"
+            f"Then, in the 'Code:' sequence, write the code in simple Python, ending with '<end_code>'.\n"
+            f"Use print() to display important intermediate results. These will appear in the 'Observation:' field for the next step.\n"
+            f"In the end, return a final answer using the final_answer tool.\n\n"
+
+            f"When searching for relevant lemmas or theorems, batch all necessary moogle_semantic_search queries into a single code block for efficiency. Do not call moogle_semantic_search one at a time in separate steps.\n\n"
+
+            f"EXAMPLE OF BATCHED SEARCHES (CORRECT):\n"
+            f"Code:\n"
+            f"""```py\nresults_lemma1 = moogle_semantic_search(query=\"lemma about real addition\")\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma1)\nprint(results_lemma2)\n```<end_code>\n"""
+            f"Observation: [results for both queries]\n\n"
+            f"EXAMPLE OF SINGLE SEARCH PER STEP (WRONG):\n"
+            f"Code:\n"
+            f"""```py\nresults_lemma1 = moogle_semantic_search(query=\"lemma about real addition\")\nprint(results_lemma1)\n```<end_code>\n"""
+            f"Observation: [results for first query]\n\n"
+            f"Code:\n"
+            f"""```py\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma2)\n```<end_code>\n"""
+            f"Observation: [results for second query]\n\n"
+            f"Always batch your semantic search queries as shown in the correct example above.\n\n"
+
+            f"Here are a few examples using your available tools and agents:\n"
+            f"---\n"
+            f"Task: 'Prove a theorem about real number arithmetic.'\n\n"
+            f"Thought: I will search for relevant lemmas about real number arithmetic using moogle_semantic_search.\n"
+            f"Code:\n"
+            f"""```py\nresults = moogle_semantic_search(query=\"real number arithmetic lemma\")\nprint(results)\n```<end_code>\n"""
+            f"Observation: [A list of relevant lemmas and their Lean code]\n\n"
+            f"Thought: I will now develop a proof strategy and call the code_generator agent to generate and verify Lean code.\n"
+            f"Code:\n"
+            f"""```py\nstrategy = 'Use the lemma real.add_assoc and norm_num for simplification.'\nlemmas = 'real.add_assoc'\nresult = code_generator(theorem_statement=theorem['statement'], proof_strategy=strategy, lemmas=lemmas)\nprint(result)\n```<end_code>\n"""
+            f"Observation: {{'lean_code': '...', 'compiler_output': 'error: ...'}}\n\n"
+            f"Thought: The proof failed due to a missing import. I will update my strategy and call code_generator again.\n"
+            f"Code:\n"
+            f"""```py\nstrategy = 'Add the necessary import for real numbers and use real.add_assoc.'\nlemmas = 'import data.real.basic, real.add_assoc'\nresult = code_generator(theorem_statement=theorem['statement'], proof_strategy=strategy, lemmas=lemmas)\nprint(result)\n```<end_code>\n"""
+            f"Observation: {{'lean_code': '...', 'compiler_output': 'success'}}\n\n"
+            f"Thought: The proof was successful. I will return the final answer.\n"
+            f"Code:\n"
+            f"""```py\nfinal_answer(result['lean_code'])\n```<end_code>\n"""
+            f"---\n\n"
+            f"=== RULES YOU MUST ALWAYS FOLLOW ===\n"
+            f"1. Always provide a 'Thought:' sequence, and a 'Code:\n```py' sequence ending with '```<end_code>' sequence, else you will fail.\n"
+            f"2. Use only variables that you have defined!\n"
+            f"3. Always use the right arguments for the tools. DO NOT pass the arguments as a dict, but use the arguments directly as in moogle_semantic_search(query=...).\n"
+            f"4. Never write or execute Python code for proof steps or Lean code generation. Only use code_generator for Lean code.\n"
+            f"5. When using code_generator, you must clearly state the Lean theorem statement and call the agent as in the correct example above.\n"
+            f"6. After developing or updating a proof strategy, ALWAYS call the code_generator agent to generate and verify Lean code, even if the previous attempt failed. Every iteration must include a call to code_generator with the current strategy and lemmas.\n"
+            f"7. Do not chain too many sequential tool calls in the same code block, especially when the output format is unpredictable.\n"
+            f"8. Call a tool only when needed, and never re-do a tool call that you previously did with the exact same parameters.\n"
+            f"9. Don't name any new variable with the same name as a tool.\n"
+            f"10. Never create any notional variables in your code, as having these in your logs might derail you from the true variables.\n"
+            f"11. You can use imports in your code, but only from the following list of modules: {{authorized_imports}}\n"
+            f"12. The state persists between code executions: so if in one step you've created variables or imported modules, these will all persist.\n"
+            f"13. Don't give up! You're in charge of solving the task, not providing directions to solve it.\n"
+            f"14. CRITICAL: All final theorem proofs MUST be formatted using 'begin' and 'end' syntax. Never use term-mode proofs or other formats.\n\n"
+            f"=== REQUIRED PROOF FORMAT ===\n"
+            f"Your final answer must be formatted exactly like this:\n"
+            f"theorem theorem_name :\n"
+            f"  statement_here :=\n"
+            f"begin\n"
+            f"  proof_steps_here\n"
+            f"end\n\n"
+            f"For example:\n"
+            f"theorem mathd_algebra_10 :\n"
+            f"  abs ((120 : ℝ)/100 * 30 - 130/100 * 20) = 10 :=\n"
+            f"begin\n"
+            f"  norm_num\n"
+            f"end\n\n"
+            f"=== YOUR TASK ===\n"
+            f"Prove this theorem:\n{theorem['statement']}\n\n"
+            f"Begin by analyzing the theorem and planning your approach!"
         )
 
-        # Подсчет токенов для промпта
+        # Count tokens for the prompt
         if enc is not None and token_counter is not None:
             prompt_tokens = len(enc.encode(prompt))
             token_counter['total'] += prompt_tokens
             logger.debug(f"Prompt tokens: {prompt_tokens}")
 
         result = agent.run(prompt)
-        # Подсчет токенов для ответа
+        
+        # Count tokens for the result
         if enc is not None and token_counter is not None and result is not None:
             if isinstance(result, str):
                 result_tokens = len(enc.encode(result))
             elif isinstance(result, dict):
-                # Сериализуем dict в строку для подсчета токенов
                 result_tokens = len(enc.encode(json.dumps(result)))
             else:
                 result_tokens = 0
             token_counter['total'] += result_tokens
             logger.debug(f"Result tokens: {result_tokens}")
-        # Если результат None — неуспех
+        
+        # Analyze the result
         if result is None:
             logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (no result)")
             logger.debug(f"Agent result:\n{result}")
             return False
-        # Если результат — dict, только success==True — успех, иначе сразу return False
+            
         if isinstance(result, dict):
             if result.get('success') is True:
+                # Log the Lean code solution if present
+                if 'lean_code' in result:
+                    logger.info(f"Lean code solution for {theorem['name']}:\n{result['lean_code']}")
                 logger.info(f"✅ Agent successfully generated proof for {theorem['name']}")
                 logger.debug(f"Agent result:\n{result}")
                 return True
@@ -201,8 +268,10 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
                 logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (agent returned success: False or error)")
                 logger.debug(f"Agent result:\n{result}")
                 return False
-        # Если результат — строка с Lean-доказательством, проверить его через verify_lean_proof
+                
         if isinstance(result, str) and 'theorem' in result and 'begin' in result and 'end' in result:
+            # Log the Lean code solution
+            logger.info(f"Lean code solution for {theorem['name']}:\n{result}")
             verification = verify_lean_proof(result)
             if isinstance(verification, dict) and verification.get('success') is True:
                 logger.info(f"✅ Agent successfully generated proof for {theorem['name']} (after verification)")
@@ -212,12 +281,21 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
                 logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (verification failed)")
                 logger.debug(f"Verification result:\n{verification}")
                 return False
-        # Всё остальное — неуспех
+                
         logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (no valid result)")
         logger.debug(f"Agent result:\n{result}")
         return False
+        
     except Exception as e:
-        logger.error(f"❌ Error during agent execution for {theorem['name']}: {e}")
+        error_message = str(e)
+        logger.error(f"❌ Error during agent execution for {theorem['name']}: {error_message}")
+        
+        # Check for error code 402 (insufficient credits) - signal to stop processing
+        if "Error code: 402" in error_message:
+            logger.critical("❌ CRITICAL: Insufficient credits to continue.")
+            logger.critical("Visit https://openrouter.ai/settings/credits to add more credits.")
+            return "INSUFFICIENT_CREDITS"
+        
         return False
 
 def main():
@@ -278,14 +356,23 @@ def main():
         logger.warning("No tasks selected for the micro-subset. Exiting.")
         return
 
-    agent = create_agent(max_steps=MAX_STEPS, planning_interval=PLANNING_INTERVAL)
+    agent = create_math_prover_agent(max_steps=MAX_STEPS, planning_interval=PLANNING_INTERVAL)
 
     logger.info("\n--- Running Agent-based Theorem Proving on Micro-Subset ---")
     results = {}
+    insufficient_credits = False
     
     for i, theorem in enumerate(micro_subset):
         logger.info(f"\nProcessing task {i+1}/{len(micro_subset)}: {theorem['name']}")
         success = prove_theorem_with_agent(agent, theorem, max_steps=MAX_STEPS, enc=enc, token_counter=token_counter)
+        
+        # Check if we ran out of credits
+        if success == "INSUFFICIENT_CREDITS":
+            insufficient_credits = True
+            results[theorem['name']] = False  # Mark as failed
+            logger.info(f"Stopping processing due to insufficient credits. Processed {i+1} out of {len(micro_subset)} tasks.")
+            break
+        
         results[theorem['name']] = success
 
     logger.info("\n--- Summary of Results ---")
@@ -310,6 +397,12 @@ def main():
         logger.info(f"Total tokens used for prompts and results: {token_counter['total']}")
     else:
         logger.info("Token counting was not available (tiktoken not installed or failed to load).")
+    
+    # --- Handle insufficient credits error ---
+    if insufficient_credits:
+        logger.critical("\n❌ PROGRAM TERMINATED: Insufficient credits to continue processing.")
+        logger.critical("Add more credits at https://openrouter.ai/settings/credits and try again.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
