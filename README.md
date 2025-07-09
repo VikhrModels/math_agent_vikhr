@@ -30,55 +30,105 @@ math_agent_vikhr/
 └── 📁 venv/                       # Virtual environment
 ```
 
-## 🔧 Configuration
+## 🤖 AI Agents System
 
-### `config.py` - Centralized Configuration
+### Overview
 
-All project settings are centralized in `config.py`:
+The `agents/` package implements a sophisticated multi-agent system for automated theorem proving using the `smolagents` framework. The system consists of two main agents working together:
 
-- **API Configuration**: OpenRouter API settings
-- **Model Configuration**: Available LLM models and defaults
-- **Lean Configuration**: File paths and timeouts
-- **Agent Configuration**: Default parameters and settings
-- **Logging Configuration**: Log formats and file paths
+1. **Idea Generator Agent**: Analyzes theorem statements, searches for relevant lemmas, and develops proof strategies
+2. **Code Generator Agent**: Generates and verifies Lean code based on the strategies provided
 
-Key features:
-- Environment-specific overrides
-- Configuration validation
-- Centralized path management
-- Security through environment variables
-
-### Environment Variables
-
-Set these environment variables before running:
-
-```bash
-export OPENROUTER_API_KEY="your_openrouter_api_key"
-export MATH_AGENT_MODEL="anthropic/claude-sonnet-4"  # Optional: override default model
-export MATH_AGENT_SUBSET_SIZE="10"                   # Optional: override subset size
-```
-
-## 🤖 AI Agents
-
-### `agents/` Package
-
-The `agents/` package contains all AI agent logic:
+### Agent Architecture
 
 #### `agents/math_prover_agent.py`
-- **MathProverAgent**: Main agent class for theorem proving
-- Supports both CodeAgent and ToolCallingAgent types
-- Integrated with centralized configuration
-- Comprehensive logging and error handling
+
+This is the main entry point for the agent-based theorem proving system.
+
+**Key Functions:**
+
+- `create_math_prover_agent()`: Creates a multi-agent system with idea and code generation capabilities
+- `prove_theorem_with_agent()`: Executes a single theorem proof using the agent system
+- `main()`: Orchestrates the complete benchmark process
+
+**Agent Configuration:**
+```python
+from agents import create_math_prover_agent
+
+# Create agent with custom parameters
+agent = create_math_prover_agent(
+    max_steps=10,           # Maximum agent steps per theorem
+    planning_interval=1      # Planning frequency
+)
+```
+
+**Multi-Agent System:**
+- **Idea Generator**: Uses `moogle_semantic_search` tool to find relevant lemmas
+- **Code Generator**: Uses `verify_lean_proof` tool to generate and verify Lean code
+- **Managed Agents**: Code generator is managed by the idea generator
 
 #### `agents/tools.py`
-- Custom tools and utilities for agents
-- Lean verification utilities
-- Common helper functions
-- Foundation for future tool implementations
+
+Contains the custom tools that agents use for theorem proving:
+
+**1. VerifyLeanProof Tool**
+```python
+class VerifyLeanProof(Tool):
+    """
+    Verifies Lean 3.42.1 mathematical proofs by compiling them within the miniF2F project environment.
+    
+    Features:
+    - Creates temporary files within miniF2F project structure
+    - Handles both ':= sorry' and ':= begin sorry end' formats
+    - Validates compilation success and produces .olean files
+    - Comprehensive error handling and timeout management
+    - Cleans up temporary files automatically
+    """
+```
+
+**Usage:**
+```python
+from agents.tools import verify_lean_proof
+
+result = verify_lean_proof("""
+theorem example : 2 + 2 = 4 := 
+begin
+  norm_num
+end
+""")
+
+# Returns: {'success': True, 'output': 'compilation output'}
+```
+
+**2. MoogleSemanticSearch Tool**
+```python
+class MoogleSemanticSearch(Tool):
+    """
+    Performs semantic search for theorems, lemmas, and mathematical structures via moogle.ai.
+    
+    Features:
+    - Searches Lean mathlib for relevant mathematical declarations
+    - Returns structured data with declaration names, code, and documentation
+    - Handles brotli compression and JSON parsing
+    - Comprehensive error handling for network requests
+    """
+```
+
+**Usage:**
+```python
+from agents.tools import moogle_semantic_search
+
+results = moogle_semantic_search("real number arithmetic lemma")
+# Returns structured data about relevant lemmas and theorems
+```
 
 #### `agents/__init__.py`
-- Package initialization
-- Convenient imports: `from agents import create_math_prover_agent`
+
+Package initialization with version information and exports:
+```python
+__version__ = "1.0.0"
+__author__ = "Math Agent Vikhr Team"
+```
 
 ## 🚀 Usage
 
@@ -97,57 +147,95 @@ The `agents/` package contains all AI agent logic:
    python process_lean.py
    ```
 
-3. **Run Benchmark**:
+3. **Run Agent-based Benchmark**:
    ```bash
-   python benchmark_sonnet_only.py
+   python agents/math_prover_agent.py
    ```
 
-### Using the MathProverAgent
+### Agent-based Theorem Proving
 
-```python
-from agents import create_math_prover_agent
+The agent system provides sophisticated theorem proving capabilities:
 
-# Create a CodeAgent
-agent = create_math_prover_agent(agent_type="code")
-
-# Run a task
-response = agent.run("What is the 10th prime number? Use code to find it.")
-
-# Create a ToolCallingAgent
-tool_agent = create_math_prover_agent(agent_type="tool_calling")
-```
-
-### Command Line Options
-
-The benchmark script supports various options:
-
+#### Basic Usage
 ```bash
-# Basic usage
-python benchmark_sonnet_only.py
+# Run with default settings
+python agents/math_prover_agent.py
 
 # Custom subset size
-python benchmark_sonnet_only.py --subset_size 20
-
-# Different model
-python benchmark_sonnet_only.py --model "google/gemini-pro"
-
-# Custom JSON file
-python benchmark_sonnet_only.py --json_file /path/to/theorems.json
+python agents/math_prover_agent.py --subset_size 20
 
 # Debug logging
-python benchmark_sonnet_only.py --log_level DEBUG
+python agents/math_prover_agent.py --log_level DEBUG
+
+# Custom model
+python agents/math_prover_agent.py --model "anthropic/claude-sonnet-4"
 ```
 
-## 🔄 Workflow
+#### Advanced Configuration
 
-The core workflow remains the same but is now more modular:
+**Agent Parameters:**
+- `--max_steps`: Maximum agent steps per theorem (default: 10)
+- `--planning_interval`: Planning frequency (default: 1)
+- `--subset_size`: Number of theorems to test (default: 10)
+- `--json_file`: Path to theorems JSON file
+- `--log_level`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 
-1. **Configuration**: `config.py` validates all settings
-2. **Parsing**: `process_lean.py` extracts theorems from Lean files
-3. **Agent Creation**: `agents/math_prover_agent.py` creates configured agents
-4. **Proof Generation**: LLM generates proofs using the agent
-5. **Verification**: Lean compiler validates the proofs
-6. **Reporting**: Results are logged and summarized
+**Checkpoint System:**
+```bash
+# Save checkpoint every 5 tasks
+python agents/math_prover_agent.py --save_checkpoint my_run --checkpoint_interval 5
+
+# Resume from checkpoint
+python agents/math_prover_agent.py --checkpoint my_run
+
+# List available checkpoints
+python agents/math_prover_agent.py --list_checkpoints
+```
+
+#### Understanding Agent Behavior
+
+**Agent Workflow:**
+1. **Analysis**: Agent analyzes the theorem statement
+2. **Search**: Uses semantic search to find relevant lemmas
+3. **Strategy**: Develops a proof strategy based on found lemmas
+4. **Generation**: Generates Lean code using the strategy
+5. **Verification**: Compiles and verifies the generated proof
+6. **Iteration**: Refines the proof if verification fails
+
+**Agent Limits:**
+- **max_steps**: Controls how many times the agent can "think" and generate new approaches
+- **planning_interval**: Determines how frequently the agent plans its next action
+- **timeout**: Prevents the agent from running indefinitely on a single theorem
+
+### Traditional LLM Benchmark
+
+For comparison, you can also run the traditional benchmark:
+
+```bash
+python benchmark_sonnet_only.py
+```
+
+## 🔧 Configuration
+
+### `config.py` - Centralized Configuration
+
+All project settings are centralized in `config.py`:
+
+- **API Configuration**: OpenRouter API settings
+- **Model Configuration**: Available LLM models and defaults
+- **Lean Configuration**: File paths and timeouts
+- **Agent Configuration**: Default parameters and settings
+- **Logging Configuration**: Log formats and file paths
+
+### Environment Variables
+
+Set these environment variables before running:
+
+```bash
+export OPENROUTER_API_KEY="your_openrouter_api_key"
+export MATH_AGENT_MODEL="anthropic/claude-sonnet-4"  # Optional: override default model
+export MATH_AGENT_SUBSET_SIZE="10"                   # Optional: override subset size
+```
 
 ## 🛠️ Development
 
@@ -155,27 +243,73 @@ The core workflow remains the same but is now more modular:
 
 To add custom tools to the agents:
 
-1. Define tools in `agents/tools.py`:
+1. **Define tools in `agents/tools.py`:**
    ```python
-   from smolagents import tool
+   from smolagents import Tool
    
-   @tool
-   def my_custom_tool(param: str) -> str:
-       """Description of what this tool does.
+   class MyCustomTool(Tool):
+       name = "my_custom_tool"
+       description = "Description of what this tool does"
        
-       Args:
-           param: Description of the parameter
-       """
-       # Tool implementation
-       return result
+       inputs = {
+           "param": {
+               "type": "string",
+               "description": "Description of the parameter"
+           }
+       }
+       
+       output_type = "object"
+       
+       def forward(self, param: str) -> dict:
+           # Tool implementation
+           return {"result": "success"}
    ```
 
-2. Use in agents:
+2. **Create tool instance:**
+   ```python
+   my_custom_tool = MyCustomTool()
+   ```
+
+3. **Use in agents:**
    ```python
    from agents.tools import my_custom_tool
    
    agent = create_math_prover_agent(tools=[my_custom_tool])
    ```
+
+### Extending Agent Capabilities
+
+**Adding New Agent Types:**
+```python
+def create_math_prover_agent(agent_type="idea", **kwargs):
+    if agent_type == "idea":
+        return CodeAgent(
+            tools=[moogle_semantic_search],
+            managed_agents=[code_agent],
+            **kwargs
+        )
+    elif agent_type == "code":
+        return CodeAgent(
+            tools=[verify_lean_proof],
+            **kwargs
+        )
+```
+
+**Custom Agent Prompts:**
+```python
+def create_custom_prompt(theorem: dict) -> str:
+    return f"""
+    You are an expert Lean theorem prover.
+    
+    Theorem: {theorem['statement']}
+    
+    Your task is to:
+    1. Analyze the theorem
+    2. Search for relevant lemmas
+    3. Generate a valid Lean proof
+    4. Verify the proof compiles successfully
+    """
+```
 
 ### Configuration Management
 
@@ -184,28 +318,92 @@ To add custom tools to the agents:
 - Implement validation in `validate_config()`
 - Add environment-specific overrides as needed
 
-## 📊 Results
+## 📊 Results and Monitoring
 
-The system provides detailed logging and reporting:
+### Logging System
 
-- **Logs**: Stored in `log/llm_requests.log`
-- **Micro-subset**: Selected tasks saved to `micro_subset.txt`
-- **Console Output**: Real-time progress and results
-- **Pass Rate**: Percentage of successfully proven theorems
+The agent system provides comprehensive logging:
 
-## 🔒 Security
+- **Agent Logs**: `log/agent_benchmark.log`
+- **Tool Logs**: Individual tool execution logs
+- **Checkpoint Data**: Progress saved in `tmp/checkpoints/`
+- **Token Usage**: Tracks LLM token consumption
 
-- API keys stored in environment variables
-- No hardcoded sensitive information
-- Configuration validation prevents insecure settings
-- Lean verification runs in controlled environment
+### Checkpoint System
+
+**Automatic Checkpoints:**
+```bash
+# Save every 5 tasks
+python agents/math_prover_agent.py --save_checkpoint my_run --checkpoint_interval 5
+```
+
+**Manual Checkpoints:**
+```python
+from agents.math_prover_agent import save_checkpoint, load_checkpoint
+
+# Save progress
+save_checkpoint(results, processed_count, total_count, "my_checkpoint")
+
+# Load progress
+checkpoint_data = load_checkpoint("my_checkpoint")
+```
+
+### Performance Metrics
+
+The system tracks:
+- **Success Rate**: Percentage of successfully proven theorems
+- **Token Usage**: Total tokens consumed by LLM interactions
+- **Processing Time**: Time per theorem and total benchmark time
+- **Error Analysis**: Detailed error logs for failed proofs
+
+## 🔒 Security and Best Practices
+
+### API Key Management
+- Store API keys in environment variables
+- Never commit sensitive data to version control
+- Use different keys for development and production
+
+### Error Handling
+- Comprehensive timeout management
+- Graceful handling of API failures
+- Automatic cleanup of temporary files
+- Detailed error logging for debugging
+
+### Resource Management
+- Configurable timeouts for Lean compilation
+- Memory-efficient processing of large theorem sets
+- Automatic cleanup of temporary files and processes
 
 ## 🤝 Contributing
 
-1. Follow the modular structure
-2. Use centralized configuration
-3. Add proper logging
-4. Include error handling
+### Development Guidelines
+
+1. **Follow the modular structure**
+   - Keep agent logic in `agents/` package
+   - Use centralized configuration in `config.py`
+   - Add proper logging and error handling
+
+2. **Agent Development**
+   - Test new tools thoroughly
+   - Document tool interfaces clearly
+   - Maintain backward compatibility
+
+3. **Configuration**
+   - Add new settings to `config.py`
+   - Use environment variables for sensitive data
+   - Implement proper validation
+
+4. **Testing**
+   - Test with small theorem subsets first
+   - Verify Lean compilation works correctly
+   - Check token usage and costs
+
+### Code Style
+
+- Follow PEP 8 for Python code
+- Use type hints for function parameters
+- Add comprehensive docstrings
+- Include error handling for all external calls
 
 ## 📄 License
 
@@ -262,71 +460,13 @@ limitations under the License.
 
 ## Features
 
-- Agent-based theorem proving using smolagents
-- Lean 4 proof verification
-- Support for multiple LLM models via OpenRouter
-- Stratified sampling for representative testing
-- Comprehensive logging and error handling
-
-## Setup
-
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-2. Set your OpenRouter API key:
-```bash
-export OPENROUTER_API_KEY="your_api_key_here"
-```
-
-3. Initialize the miniF2F submodule:
-```bash
-git submodule update --init --recursive
-```
-
-## Usage
-
-### Agent-based Theorem Proving
-
-Run the agent-based benchmark:
-
-```bash
-python agents/math_prover_agent.py
-```
-
-#### Agent Configuration Options
-
-You can control the agent's behavior with these parameters:
-
-- `--max_iterations`: Maximum number of agent iterations per theorem (default: 5)
-- `--max_tool_calls`: Maximum number of tool calls per theorem (default: 10)  
-- `--agent_timeout`: Timeout in seconds for agent execution per theorem (default: 300)
-- `--subset_size`: Number of theorems to test (default: 10)
-- `--log_level`: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-
-Example with custom limits:
-```bash
-python agents/math_prover_agent.py \
-  --max_iterations 3 \
-  --max_tool_calls 5 \
-  --agent_timeout 120 \
-  --subset_size 5 \
-  --log_level DEBUG
-```
-
-#### Understanding Agent Limits
-
-- **max_iterations**: Controls how many times the agent can "think" and generate new approaches
-- **max_tool_calls**: Limits the number of times the agent can call the `verify_lean_proof` tool
-- **agent_timeout**: Prevents the agent from running indefinitely on a single theorem
-
-Lower limits make the agent faster but may reduce success rate. Higher limits give the agent more chances but take longer.
-
-### Traditional LLM Benchmark
-
-Run the traditional benchmark (without agent framework):
-
-```bash
-python benchmark_sonnet_only.py
-```
+- **Multi-Agent System**: Sophisticated agent-based theorem proving using smolagents
+- **Lean 3.42.1 Integration**: Full integration with Lean compiler and mathlib
+- **Semantic Search**: Moogle.ai integration for finding relevant lemmas and theorems
+- **Proof Verification**: Automatic compilation and verification of generated proofs
+- **Checkpoint System**: Resume long-running benchmarks from saved progress
+- **Token Tracking**: Monitor LLM token usage and costs
+- **Stratified Sampling**: Representative testing with preserved solved/unsolved ratios
+- **Comprehensive Logging**: Detailed logs for debugging and analysis
+- **Error Handling**: Robust error handling for network, compilation, and API issues
+- **Configuration Management**: Centralized configuration with environment overrides

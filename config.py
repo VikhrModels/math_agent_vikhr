@@ -22,10 +22,8 @@ OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "anthropic/claude-sonnet-4"
 AVAILABLE_MODELS = [
     "anthropic/claude-sonnet-4",
-    "anthropic/claude-3-5-sonnet",
-    "google/gemini-pro",
-    "meta-llama/llama-3.1-70b-instruct",
-    "openai/gpt-4o",
+    "google/gemini-2.5-pro",
+    "openai/gpt-4.1",
 ]
 
 # --- Lean Configuration ---

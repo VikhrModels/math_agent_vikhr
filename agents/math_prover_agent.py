@@ -5,6 +5,7 @@ import logging
 import argparse
 from pathlib import Path
 import tiktoken
+from typing import Union, Optional
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -31,6 +32,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Checkpoint configuration ---
+CHECKPOINT_DIR = TMP_DIR / "checkpoints"
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
 # --- Helper functions ---
 def read_json_file(filepath: Path) -> list[dict]:
     """Reads the contents of a JSON file with theorems."""
@@ -44,6 +49,50 @@ def read_json_file(filepath: Path) -> list[dict]:
     except Exception as e:
         logger.error(f"Error reading file {filepath}: {e}")
         raise
+
+def save_checkpoint(results: dict, processed_count: int, total_count: int, checkpoint_name: str) -> None:
+    """Save current progress to a checkpoint file."""
+    checkpoint_data = {
+        'results': results,
+        'processed_count': processed_count,
+        'total_count': total_count,
+        'timestamp': str(Path().cwd()),
+        'model': DEFAULT_MODEL,
+        'subset_size': total_count
+    }
+    
+    checkpoint_file = CHECKPOINT_DIR / f"{checkpoint_name}.json"
+    try:
+        with checkpoint_file.open('w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ Checkpoint saved: {checkpoint_file}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save checkpoint: {e}")
+
+def load_checkpoint(checkpoint_name: str) -> Optional[dict]:
+    """Load progress from a checkpoint file."""
+    checkpoint_file = CHECKPOINT_DIR / f"{checkpoint_name}.json"
+    
+    if not checkpoint_file.exists():
+        logger.warning(f"Checkpoint file not found: {checkpoint_file}")
+        return None
+    
+    try:
+        with checkpoint_file.open('r', encoding='utf-8') as f:
+            checkpoint_data = json.load(f)
+        logger.info(f"✅ Checkpoint loaded: {checkpoint_file}")
+        logger.info(f"   Processed: {checkpoint_data['processed_count']}/{checkpoint_data['total_count']} tasks")
+        return checkpoint_data
+    except Exception as e:
+        logger.error(f"❌ Failed to load checkpoint: {e}")
+        return None
+
+def list_checkpoints() -> list[str]:
+    """List all available checkpoint files."""
+    checkpoints = []
+    for checkpoint_file in CHECKPOINT_DIR.glob("*.json"):
+        checkpoints.append(checkpoint_file.stem)
+    return sorted(checkpoints)
 
 def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -> list[dict]:
     """
@@ -137,7 +186,7 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interv
 
     return idea_agent
 
-def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS, enc=None, token_counter=None) -> bool:
+def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS, enc=None, token_counter=None) -> Union[bool, str]:
     """
     Uses the agent to prove a single theorem.
     Args:
@@ -178,6 +227,18 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"""```py\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma2)\n```<end_code>\n"""
             f"Observation: [results for second query]\n\n"
             f"Always batch your semantic search queries as shown in the correct example above.\n\n"
+
+            f"While using a code agent you must mentions those rules in promt:\n"
+            f"CRITICAL: You must ONLY generate Lean code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n"
+            f"EXAMPLE OF CORRECT APPROACH:\n"
+            f"theorem_statement = '''theorem example : 2 + 2 = 4 := begin norm_num end'''\n"
+            f"result = verify_lean_proof(theorem_statement)\n"
+            f"DO NOT DO THIS (WRONG):\n"
+            f"# Mathematical analysis in Python\n"
+            f"for i in range(10):\n"
+            f"    print(i)\n"
+            f"Your response must be ONLY Lean code starting with 'theorem' and ending with 'end'.\n"
+            f"No Python code, no comments, no explanations.\n\n"
 
             f"Here are a few examples using your available tools and agents:\n"
             f"---\n"
@@ -314,6 +375,16 @@ def main():
                         help="Maximum number of agent steps per theorem.")
     parser.add_argument("--planning_interval", type=int, default=DEFAULT_PLANNING_INTERVAL,
                         help=f"Interval for agent planning steps (default: {DEFAULT_PLANNING_INTERVAL}). Lower = more frequent planning.")
+    
+    # Checkpoint arguments
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Name of checkpoint to resume from (without .json extension).")
+    parser.add_argument("--save_checkpoint", type=str, default=None,
+                        help="Name for saving checkpoint (without .json extension).")
+    parser.add_argument("--checkpoint_interval", type=int, default=5,
+                        help="Save checkpoint every N processed tasks (default: 5).")
+    parser.add_argument("--list_checkpoints", action="store_true",
+                        help="List all available checkpoints and exit.")
     args = parser.parse_args()
 
     # --- tiktoken setup ---
@@ -328,11 +399,28 @@ def main():
     VALID_JSON_PATH = args.json_file
     MAX_STEPS = args.max_steps
     PLANNING_INTERVAL = args.planning_interval
+    CHECKPOINT_INTERVAL = args.checkpoint_interval
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
+    # Handle checkpoint listing
+    if args.list_checkpoints:
+        checkpoints = list_checkpoints()
+        if checkpoints:
+            logger.info("Available checkpoints:")
+            for checkpoint in checkpoints:
+                logger.info(f"  - {checkpoint}")
+        else:
+            logger.info("No checkpoints found.")
+        return
+
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
     logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}")
+    if args.checkpoint:
+        logger.info(f"Resuming from checkpoint: {args.checkpoint}")
+    if args.save_checkpoint:
+        logger.info(f"Will save checkpoint as: {args.save_checkpoint}")
+    logger.info(f"Checkpoint interval: {CHECKPOINT_INTERVAL} tasks")
     
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -356,13 +444,25 @@ def main():
         logger.warning("No tasks selected for the micro-subset. Exiting.")
         return
 
+    # Load checkpoint if specified
+    start_index = 0
+    results = {}
+    if args.checkpoint:
+        checkpoint_data = load_checkpoint(args.checkpoint)
+        if checkpoint_data:
+            results = checkpoint_data['results']
+            start_index = checkpoint_data['processed_count']
+            logger.info(f"Resuming from task {start_index + 1}/{len(micro_subset)}")
+        else:
+            logger.warning(f"Failed to load checkpoint '{args.checkpoint}', starting from beginning.")
+            start_index = 0
+
     agent = create_math_prover_agent(max_steps=MAX_STEPS, planning_interval=PLANNING_INTERVAL)
 
     logger.info("\n--- Running Agent-based Theorem Proving on Micro-Subset ---")
-    results = {}
     insufficient_credits = False
     
-    for i, theorem in enumerate(micro_subset):
+    for i, theorem in enumerate(micro_subset[start_index:], start=start_index):
         logger.info(f"\nProcessing task {i+1}/{len(micro_subset)}: {theorem['name']}")
         success = prove_theorem_with_agent(agent, theorem, max_steps=MAX_STEPS, enc=enc, token_counter=token_counter)
         
@@ -371,9 +471,17 @@ def main():
             insufficient_credits = True
             results[theorem['name']] = False  # Mark as failed
             logger.info(f"Stopping processing due to insufficient credits. Processed {i+1} out of {len(micro_subset)} tasks.")
+            
+            # Save checkpoint before exiting
+            if args.save_checkpoint:
+                save_checkpoint(results, i+1, len(micro_subset), args.save_checkpoint)
             break
         
         results[theorem['name']] = success
+        
+        # Save checkpoint periodically
+        if args.save_checkpoint and (i + 1) % CHECKPOINT_INTERVAL == 0:
+            save_checkpoint(results, i+1, len(micro_subset), args.save_checkpoint)
 
     logger.info("\n--- Summary of Results ---")
     solved_count = sum(1 for success in results.values() if success)
@@ -398,10 +506,15 @@ def main():
     else:
         logger.info("Token counting was not available (tiktoken not installed or failed to load).")
     
+    # Save final checkpoint if requested
+    if args.save_checkpoint:
+        save_checkpoint(results, len(micro_subset), len(micro_subset), args.save_checkpoint)
+    
     # --- Handle insufficient credits error ---
     if insufficient_credits:
         logger.critical("\n❌ PROGRAM TERMINATED: Insufficient credits to continue processing.")
         logger.critical("Add more credits at https://openrouter.ai/settings/credits and try again.")
+        logger.critical(f"You can resume from checkpoint '{args.save_checkpoint}' when you have more credits.")
         sys.exit(1)
 
 if __name__ == "__main__":
