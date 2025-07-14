@@ -42,6 +42,9 @@ DEFAULT_MAX_STEPS = 5  # Maximum number of agent steps per theorem
 # Planning interval for agent (how often to run planning phase)
 DEFAULT_PLANNING_INTERVAL = 2  # Run planning every N steps
 
+# --- Concurrency ---
+DEFAULT_CONCURRENCY = 4 # Number of theorems to process in parallel
+
 # --- Logging Configuration ---
 LOG_FILE = LOG_DIR / "llm_requests.log"
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
@@ -91,6 +94,7 @@ __all__ = [
     "DEFAULT_JSON_FILE",
     "DEFAULT_MAX_STEPS",
     "DEFAULT_PLANNING_INTERVAL",
+    "DEFAULT_CONCURRENCY",
     "LOG_FILE",
     "LOG_FORMAT",
     "validate_config",

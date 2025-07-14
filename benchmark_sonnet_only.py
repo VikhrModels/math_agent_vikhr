@@ -7,7 +7,9 @@ import random
 import logging
 import argparse
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
 # Import configuration
@@ -263,7 +265,7 @@ def extract_proof_body(llm_response_content: str) -> str | None:
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5),
        before_sleep=before_sleep_log(logger, logging.WARNING))
-def _call_llm_with_retry(messages: list[dict], model_name: str, extra_headers: dict, max_tokens: int, temperature: float):
+def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name: str, extra_headers: dict, max_tokens: int, temperature: float):
     """
     A wrapper for the OpenAI API call that includes automatic retries with exponential backoff.
     This makes the script more resilient to transient network issues or API rate limits.
@@ -304,7 +306,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             f"```lean\n{theorem['statement']}\n```"
         )
 
-        messages = [
+        messages: List[ChatCompletionMessageParam] = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
@@ -322,9 +324,20 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             temperature=0.1,
         )
 
-        generated_content = completion.choices[0].message.content
+        # Check if completion and choices exist
+        if not completion or not completion.choices:
+            logger.error(f"  ❌ No response received from LLM for {theorem['name']}")
+            return False
         
-        logger.info(f"Received LLM response for {theorem['name']}. Content :\n{generated_content[:]}...")
+        # Check if message and content exist
+        message = completion.choices[0].message
+        if not message or not message.content:
+            logger.error(f"  ❌ Empty response content from LLM for {theorem['name']}")
+            return False
+        
+        generated_content = message.content
+        
+        logger.info(f"Received LLM response for {theorem['name']}. Content:\n{generated_content[:200]}...")
 
         generated_proof_body = extract_proof_body(generated_content)
         if generated_proof_body:

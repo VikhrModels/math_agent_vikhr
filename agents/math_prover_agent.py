@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 import tiktoken
 from typing import Union, Optional
+import concurrent.futures
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,6 +17,7 @@ from config import (
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
     DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL, 
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
+    DEFAULT_CONCURRENCY,
     validate_config
 )
 from agents.tools import verify_lean_proof, moogle_semantic_search
@@ -359,6 +361,29 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
         
         return False
 
+def process_theorem_task(theorem: dict, max_steps: int, planning_interval: int, enc: Optional[tiktoken.Encoding]) -> tuple[Union[bool, str], int, str]:
+    """
+    A wrapper function to process a single theorem in a separate thread.
+    Creates its own agent to ensure thread safety.
+    """
+    # Each thread gets its own agent to avoid state conflicts.
+    agent = create_math_prover_agent(max_steps=max_steps, planning_interval=planning_interval)
+    
+    # Each thread manages its own token count.
+    thread_token_counter = {'total': 0}
+    
+    # The original function can be called without modification.
+    success = prove_theorem_with_agent(
+        agent,
+        theorem,
+        max_steps=max_steps,
+        enc=enc,
+        token_counter=thread_token_counter
+    )
+    
+    # Return everything needed by the main thread.
+    return success, thread_token_counter['total'], theorem['name']
+
 def main():
     """
     Main function to run the agent-based theorem proving benchmark.
@@ -375,6 +400,8 @@ def main():
                         help="Maximum number of agent steps per theorem.")
     parser.add_argument("--planning_interval", type=int, default=DEFAULT_PLANNING_INTERVAL,
                         help=f"Interval for agent planning steps (default: {DEFAULT_PLANNING_INTERVAL}). Lower = more frequent planning.")
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
+                        help=f"Number of theorems to process in parallel (default: {DEFAULT_CONCURRENCY}).")
     
     # Checkpoint arguments
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -400,6 +427,7 @@ def main():
     MAX_STEPS = args.max_steps
     PLANNING_INTERVAL = args.planning_interval
     CHECKPOINT_INTERVAL = args.checkpoint_interval
+    CONCURRENCY = args.concurrency
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
@@ -415,7 +443,7 @@ def main():
         return
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
     if args.checkpoint:
         logger.info(f"Resuming from checkpoint: {args.checkpoint}")
     if args.save_checkpoint:
@@ -457,31 +485,46 @@ def main():
             logger.warning(f"Failed to load checkpoint '{args.checkpoint}', starting from beginning.")
             start_index = 0
 
-    agent = create_math_prover_agent(max_steps=MAX_STEPS, planning_interval=PLANNING_INTERVAL)
+    # Agent creation is moved into the worker threads to ensure thread safety.
 
     logger.info("\n--- Running Agent-based Theorem Proving on Micro-Subset ---")
     insufficient_credits = False
     
-    for i, theorem in enumerate(micro_subset[start_index:], start=start_index):
-        logger.info(f"\nProcessing task {i+1}/{len(micro_subset)}: {theorem['name']}")
-        success = prove_theorem_with_agent(agent, theorem, max_steps=MAX_STEPS, enc=enc, token_counter=token_counter)
+    processed_count = start_index
+    total_tasks_to_run = len(micro_subset) - start_index
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
+        future_to_theorem_name = {
+            executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, enc): theorem['name']
+            for theorem in micro_subset[start_index:]
+        }
         
-        # Check if we ran out of credits
-        if success == "INSUFFICIENT_CREDITS":
-            insufficient_credits = True
-            results[theorem['name']] = False  # Mark as failed
-            logger.info(f"Stopping processing due to insufficient credits. Processed {i+1} out of {len(micro_subset)} tasks.")
+        for future in concurrent.futures.as_completed(future_to_theorem_name):
+            theorem_name = future_to_theorem_name[future]
+            try:
+                success, tokens_used, _ = future.result()
+                
+                token_counter['total'] += tokens_used
+                results[theorem_name] = success
+                
+                if success == "INSUFFICIENT_CREDITS":
+                    insufficient_credits = True
+                    logger.critical(f"Stopping processing due to insufficient credits. Processed {processed_count - start_index}/{total_tasks_to_run} tasks in this run.")
+                    # Attempt to cancel remaining futures
+                    for f in future_to_theorem_name:
+                        f.cancel()
+                    break
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing theorem {theorem_name}: {e}")
+                results[theorem_name] = False
             
-            # Save checkpoint before exiting
-            if args.save_checkpoint:
-                save_checkpoint(results, i+1, len(micro_subset), args.save_checkpoint)
-            break
-        
-        results[theorem['name']] = success
-        
-        # Save checkpoint periodically
-        if args.save_checkpoint and (i + 1) % CHECKPOINT_INTERVAL == 0:
-            save_checkpoint(results, i+1, len(micro_subset), args.save_checkpoint)
+            processed_count += 1
+            logger.info(f"Progress: {processed_count}/{len(micro_subset)} total tasks processed.")
+            
+            # Save checkpoint periodically
+            if args.save_checkpoint and (processed_count - start_index) > 0 and (processed_count - start_index) % CHECKPOINT_INTERVAL == 0:
+                save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint)
 
     logger.info("\n--- Summary of Results ---")
     solved_count = sum(1 for success in results.values() if success)
@@ -508,7 +551,7 @@ def main():
     
     # Save final checkpoint if requested
     if args.save_checkpoint:
-        save_checkpoint(results, len(micro_subset), len(micro_subset), args.save_checkpoint)
+        save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint)
     
     # --- Handle insufficient credits error ---
     if insufficient_credits:
