@@ -1,4 +1,4 @@
-import os
+Vimport os
 import re
 import subprocess
 import time
@@ -11,6 +11,7 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
+import concurrent.futures
 
 # Import configuration
 from config import (
@@ -351,6 +352,13 @@ def generate_and_verify_proof(theorem: dict) -> bool:
         logger.error(f"  An error occurred during LLM interaction for {theorem['name']}: {e}")
         return False
 
+def process_theorem_task(theorem: dict) -> tuple[bool, str]:
+    """
+    Wrapper for thread pool: runs generate_and_verify_proof and returns (success, theorem_name)
+    """
+    success = generate_and_verify_proof(theorem)
+    return success, theorem['name']
+
 # --- Main logic ---
 def main():
     """
@@ -371,16 +379,19 @@ def main():
     parser.add_argument("--log_level", type=str, default=DEFAULT_LOG_LEVEL,
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level (e.g., DEBUG for verbose output).")
+    parser.add_argument("--concurrency", type=int, default=4,
+                        help="Number of theorems to process in parallel (default: 4).")
     args = parser.parse_args()
 
     MICRO_SUBSET_SIZE = args.subset_size
     VALID_JSON_PATH = args.json_file
     DEFAULT_MODEL = args.model
+    CONCURRENCY = args.concurrency
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
     logger.info("Starting MiniF2F Lean Prover Benchmark with Claude Sonnet via OpenRouter...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}'")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Concurrency={CONCURRENCY}")
     
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -405,13 +416,24 @@ def main():
         logger.warning("No tasks selected for the micro-subset. Exiting.")
         return
 
-    logger.info("\n--- Running LLM and Lean Verification on Micro-Subset ---")
+    logger.info("\n--- Running LLM and Lean Verification on Micro-Subset (multithreaded) ---")
     results = {}
-    for i, theorem in enumerate(micro_subset):
-        logger.info(f"\nProcessing task {i+1}/{len(micro_subset)}: {theorem['name']}")
-        success = generate_and_verify_proof(theorem)
-        results[theorem['name']] = success
-        time.sleep(1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
+        future_to_theorem = {
+            executor.submit(process_theorem_task, theorem): theorem['name']
+            for theorem in micro_subset
+        }
+        processed_count = 0
+        for future in concurrent.futures.as_completed(future_to_theorem):
+            theorem_name = future_to_theorem[future]
+            try:
+                success, name = future.result()
+                results[name] = success
+            except Exception as e:
+                logger.error(f"❌ Error processing theorem {theorem_name}: {e}")
+                results[theorem_name] = False
+            processed_count += 1
+            logger.info(f"Progress: {processed_count}/{len(micro_subset)} total tasks processed.")
 
     logger.info("\n--- Summary of Results ---")
     solved_count = sum(1 for success in results.values() if success)

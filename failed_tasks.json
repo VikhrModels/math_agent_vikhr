@@ -1,0 +1,547 @@
+[
+  {
+    "name": "amc12a_2015_p10",
+    "statement": "theorem amc12a_2015_p10\n  (x y : ℤ)\n  (h₀ : 0 < y)\n  (h₁ : y < x)\n  (h₂ : x + y + (x * y) = 80) :\n  x = 26 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "induction_sum2kp1npqsqm1",
+    "statement": "theorem induction_sum2kp1npqsqm1\n  (n : ℕ) :\n  ↑∑ k in (finset.range n), 2 * k + 3 = ↑(n + 1)^2 - (1:ℤ) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2019_p21",
+    "statement": "theorem amc12a_2019_p21\n  (z : ℂ)\n  (h₀ : z = (1 + complex.I) / real.sqrt 2) :\n  (∑ k in finset.Icc 1 12, (z^(k^2))) * (∑ k in finset.Icc 1 12, (1 / z^(k^2))) = 36 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_780",
+    "statement": "theorem mathd_numbertheory_780\n  (m x : ℕ)\n  (h₀ : 10 ≤ m)\n  (h₁ : m ≤ 99)\n  (h₂ : (6 * x) % m = 1)\n  (h₃ : (x - 6^2) % m = 0) :\n  m = 43 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1984_p5",
+    "statement": "theorem aime_1984_p5\n  (a b : ℝ)\n  (h₀ : real.logb 8 a + real.logb 4 (b^2) = 5)\n  (h₁ : real.logb 8 b + real.logb 4 (a^2) = 7) :\n  a * b = 512 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2019_p9",
+    "statement": "theorem amc12a_2019_p9\n  (a : ℕ → ℚ)\n  (h₀ : a 1 = 1)\n  (h₁ : a 2 = 3 / 7)\n  (h₂ : ∀ n, a (n + 2) = (a n * a (n + 1)) / (2 * a n - a (n + 1))) :\n  ↑(a 2019).denom + (a 2019).num = 8078 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_13",
+    "statement": "theorem mathd_algebra_13\n  (a b : ℝ)\n  (h₀ : ∀ x, (x - 3 ≠ 0 ∧ x - 5 ≠ 0) → 4 * x / (x^2 - 8 * x + 15) = a / (x - 3) + b / (x - 5)) :\n  a = -6 ∧ b = 10 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2008_p4",
+    "statement": "theorem amc12a_2008_p4 :\n  ∏ k in finset.Icc (1 : ℕ) 501, ((4 : ℝ) * k + 4) / (4 * k) = 502 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1984_p2",
+    "statement": "theorem imo_1984_p2\n  (a b : ℕ)\n  (h₀ : 0 < a ∧ 0 < b)\n  (h₁ : ¬ 7 ∣ a)\n  (h₂ : ¬ 7 ∣ b)\n  (h₃ : ¬ 7 ∣ (a + b))\n  (h₄ : (7^7) ∣ ((a + b)^7 - a^7 - b^7)) :\n  19 ≤ a + b :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_13",
+    "statement": "theorem mathd_numbertheory_13\n  (u v : ℕ)\n  (S : set ℕ)\n  (h₀ : ∀ (n : ℕ), n ∈ S ↔ 0 < n ∧ (14 * n) % 100 = 46)\n  (h₁ : is_least S u)\n  (h₂ : is_least (S \\ {u}) v) :\n  ((u + v) : ℚ) / 2 = 64 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_2006_p6",
+    "statement": "theorem imo_2006_p6\n  (a b c : ℝ) :\n  (a * b * (a^2 - b^2)) + (b * c * (b^2 - c^2)) + (c * a * (c^2 - a^2)) ≤ (9 * real.sqrt 2) / 32 * (a^2 + b^2 + c^2)^2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_221",
+    "statement": "theorem mathd_numbertheory_221\n  (S : finset ℕ)\n  (h₀ : ∀ (x : ℕ), x ∈ S ↔ 0 < x ∧ x < 1000 ∧ x.divisors.card = 3) :\n  S.card = 11 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1991_p6",
+    "statement": "theorem aime_1991_p6\n  (r : ℝ)\n  (h₀ : ∑ k in finset.Icc (19 : ℕ) 91, (int.floor (r + k / 100)) = 546) :\n  int.floor (100 * r) = 743 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_64",
+    "statement": "theorem mathd_numbertheory_64 :\n  is_least {x : ℕ | 30 * x ≡ 42 [MOD 47]} 39 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1965_p1",
+    "statement": "theorem imo_1965_p1\n  (x : ℝ)\n  (h₀ : 0 ≤ x)\n  (h₁ : x ≤ 2 * π)\n  (h₂ : 2 * real.cos x ≤ abs (real.sqrt (1 + real.sin (2 * x)) - real.sqrt (1 - real.sin (2 * x))))\n  (h₃ : abs (real.sqrt (1 + real.sin (2 * x)) - real.sqrt (1 - real.sin (2 * x))) ≤ real.sqrt 2) :\n  π / 4 ≤ x ∧ x ≤ 7 * π / 4 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_33",
+    "statement": "theorem mathd_numbertheory_33\n  (n : ℕ)\n  (h₀ : n < 398)\n  (h₁ : (n * 7) % 398 = 1) :\n  n = 57 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1964_p1_2",
+    "statement": "theorem imo_1964_p1_2\n  (n : ℕ) :\n  ¬ 7 ∣ (2^n + 1) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12_2000_p15",
+    "statement": "theorem amc12_2000_p15\n  (f : ℂ → ℂ)\n  (h₀ : ∀ x, f (x / 3) = x^2 + x + 1)\n  (h₁ : fintype (f ⁻¹' {7})) :\n  ∑ y in (f⁻¹' {7}).to_finset, y / 3 = - 1 / 9 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1987_p4",
+    "statement": "theorem imo_1987_p4\n  (f : ℕ → ℕ) :\n  ∃ n, f (f n) ≠ n + 1987 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_109",
+    "statement": "theorem mathd_numbertheory_109\n  (v : ℕ → ℕ)\n  (h₀ : ∀ n, v n = 2 * n - 1) :\n  (∑ k in finset.Icc 1 100, v k) % 7 = 4 :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "induction_sum_1oktkp1",
+    "statement": "theorem induction_sum_1oktkp1\n  (n : ℕ) :\n  ∑ k in (finset.range n), (1 : ℝ) / ((k + 1) * (k + 2)) = n / (n + 1) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_73",
+    "statement": "theorem mathd_algebra_73\n  (p q r x : ℂ)\n  (h₀ : (x - p) * (x - q) = (r - p) * (r - q))\n  (h₁ : x ≠ r) :\n  x = p + q - r :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_24",
+    "statement": "theorem mathd_numbertheory_24 :\n  (∑ k in (finset.Icc 1 9), 11^k) % 100 = 59 :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "mathd_algebra_224",
+    "statement": "theorem mathd_algebra_224\n  (S : finset ℕ)\n  (h₀ : ∀ (n : ℕ), n ∈ S ↔ real.sqrt n < 7 / 2 ∧ 2 < real.sqrt n) :\n  S.card = 8 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12b_2002_p11",
+    "statement": "theorem amc12b_2002_p11\n  (a b : ℕ)\n  (h₀ : nat.prime a)\n  (h₁ : nat.prime b)\n  (h₂ : nat.prime (a + b))\n  (h₃ : nat.prime (a - b)) :\n  nat.prime (a + b + (a - b + (a + b))) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "algebra_amgm_prod1toneq1_sum1tongeqn",
+    "statement": "theorem algebra_amgm_prod1toneq1_sum1tongeqn\n  (a : ℕ → nnreal)\n  (n : ℕ)\n  (h₀ : finset.prod (finset.range(n)) a = 1) :\n  finset.sum (finset.range(n)) a ≥ n :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1962_p4",
+    "statement": "theorem imo_1962_p4\n  (S : set ℝ)\n  (h₀ : S = {x : ℝ | (real.cos x)^2 + (real.cos (2 * x))^2 + (real.cos (3 * x))^2 = 1}) :\n  S = {x : ℝ | ∃ m : ℤ, (x = π / 2 + m * π) ∨ (x = π / 4 + m * π / 2) ∨ (x = π / 6 + m * π) ∨ (x = 5 * π / 6 + m * π)} :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_543",
+    "statement": "theorem mathd_numbertheory_543 :\n  (∑ k in (nat.divisors (30^4)), 1) - 2 = 123 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "algebra_xmysqpymzsqpzmxsqeqxyz_xpypzp6dvdx3y3z3",
+    "statement": "theorem algebra_xmysqpymzsqpzmxsqeqxyz_xpypzp6dvdx3y3z3\n  (x y z : ℤ)\n  (h₀ : (x - y)^2 + (y - z)^2 + (z - x)^2 = x * y * z) :\n  (x + y + z + 6) ∣ (x^3 + y^3 + z^3) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1994_p4",
+    "statement": "theorem aime_1994_p4\n  (n : ℕ)\n  (h₀ : 0 < n)\n  (h₀ : ∑ k in finset.Icc 1 n, int.floor (real.logb 2 k) = 1994) :\n  n = 312 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "algebra_apb4leq8ta4pb4",
+    "statement": "theorem algebra_apb4leq8ta4pb4\n  (a b : ℝ)\n  (h₀ : 0 < a ∧ 0 < b) :\n  (a + b)^4 ≤ 8 * (a^4 + b^4) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_257",
+    "statement": "theorem mathd_numbertheory_257\n  (x : ℕ)\n  (h₀ : 1 ≤ x ∧ x ≤ 100)\n  (h₁ : 77∣(∑ k in (finset.range 101), k - x)) :\n  x = 45 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_35",
+    "statement": "theorem mathd_numbertheory_35\n  (S : finset ℕ)\n  (h₀ : ∀ (n : ℕ), n ∣ (nat.sqrt 196)) :\n  ∑ k in S, k = 24 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_69",
+    "statement": "theorem mathd_algebra_69\n  (rows seats : ℕ)\n  (h₀ : rows * seats = 450)\n  (h₁ : (rows + 5) * (seats - 3) = 450) :\n  rows = 25 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "algebra_amgm_faxinrrp2msqrt2geq2mxm1div2x",
+    "statement": "theorem algebra_amgm_faxinrrp2msqrt2geq2mxm1div2x :\n  ∀ x > 0, 2 - real.sqrt 2 ≥ 2 - x - 1 / (2 * x) :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "aimeII_2020_p6",
+    "statement": "theorem aimeII_2020_p6\n  (t : ℕ → ℚ)\n  (h₀ : t 1 = 20)\n  (h₁ : t 2 = 21)\n  (h₂ : ∀ n ≥ 3, t n = (5 * t (n - 1) + 1) / (25 * t (n - 2))) :\n  ↑(t 2020).denom + (t 2020).num = 626 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2010_p22",
+    "statement": "theorem amc12a_2010_p22\n  (x : ℝ) :\n  49 ≤ ∑ k in finset.Icc 1 119, abs (↑k * x - 1) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "algebra_amgm_sqrtxymulxmyeqxpy_xpygeq4",
+    "statement": "theorem algebra_amgm_sqrtxymulxmyeqxpy_xpygeq4\n  (x y : ℝ)\n  (h₀ : 0 < x ∧ 0 < y)\n  (h₁ : y ≤ x)\n  (h₂ : real.sqrt (x * y) * (x - y) = (x + y)) :\n  x + y ≥ 4 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_405",
+    "statement": "theorem mathd_algebra_405\n  (S : finset ℕ)\n  (h₀ : ∀ x, x ∈ S ↔ 0 < x ∧ x^2 + 4 * x + 4 < 20) :\n  S.card = 2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1978_p5",
+    "statement": "theorem imo_1978_p5\n  (n : ℕ)\n  (a : ℕ → ℕ)\n  (h₀ : ∀ (m : ℕ), 0 < a m)\n  (h₁ : ∀ (p q : ℕ), p ≠ q → a p ≠ a q)\n  (h₂ : 0 < n) :\n  (∑ k in finset.Icc 1 n, (1 : ℝ)/k) ≤ ∑ k in finset.Icc 1 n, (a k)/k^2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "numbertheory_sumkmulnckeqnmul2pownm1",
+    "statement": "theorem numbertheory_sumkmulnckeqnmul2pownm1\n  (n : ℕ)\n  (h₀ : 0 < n) :\n  ∑ k in finset.Icc 1 n, (k * nat.choose n k) = n * 2^(n - 1) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2002_p21",
+    "statement": "theorem amc12a_2002_p21\n  (u : ℕ → ℕ)\n  (h₀ : u 0 = 4)\n  (h₁ : u 1 = 7)\n  (h₂ : ∀ n ≥ 2, u (n + 2) = (u n + u (n + 1)) % 10) :\n  ∀ n, ∑ k in finset.range(n), u k > 10000 → 1999 ≤ n :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_155",
+    "statement": "theorem mathd_numbertheory_155 :\n  finset.card (finset.filter (λ x, x % 19 = 7) (finset.Icc 100 999)) = 52 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2017_p7",
+    "statement": "theorem amc12a_2017_p7\n  (f : ℕ → ℝ)\n  (h₀ : f 1 = 2)\n  (h₁ : ∀ n, 1 < n ∧ even n → f n = f (n - 1) + 1)\n  (h₂ : ∀ n, 1 < n ∧ odd n → f n = f (n - 2) + 2) :\n  f 2017 = 2018 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_42",
+    "statement": "theorem mathd_numbertheory_42\n  (S : set ℕ)\n  (u v : ℕ)\n  (h₀ : ∀ (a : ℕ), a ∈ S ↔ 0 < a ∧ 27 * a % 40 = 17)\n  (h₁ : is_least S u)\n  (h₂ : is_least (S \\ {u}) v) :\n  u + v = 62 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_151",
+    "statement": "theorem mathd_algebra_151 :\n  int.ceil (real.sqrt 27) - int.floor (real.sqrt 26) = 1 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2011_p18",
+    "statement": "theorem amc12a_2011_p18\n  (x y : ℝ)\n  (h₀ : abs (x + y) + abs (x - y) = 2) :\n  x^2 - 6 * x + y^2 ≤ 9 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_303",
+    "statement": "theorem mathd_numbertheory_303\n  (S : finset ℕ)\n  (h₀ : ∀ (n : ℕ), n ∈ S ↔ 2 ≤ n ∧ 171 ≡ 80 [MOD n] ∧ 468 ≡ 13 [MOD n]) :\n  ∑ k in S, k = 111 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1988_p6",
+    "statement": "theorem imo_1988_p6\n  (a b : ℕ)\n  (h₀ : 0 < a ∧ 0 < b)\n  (h₁ : (a * b + 1) ∣ (a^2 + b^2)) :\n  ∃ x : ℕ, (x^2 : ℝ) = (a^2 + b^2) / (a * b + 1) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1991_p1",
+    "statement": "theorem aime_1991_p1\n  (x y : ℕ)\n  (h₀ : 0 < x ∧ 0 < y)\n  (h₁ : x * y + (x + y) = 71)\n  (h₂ : x^2 * y + x * y^2 = 880) :\n  x^2 + y^2 = 146 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12b_2004_p3",
+    "statement": "theorem amc12b_2004_p3\n  (x y : ℕ)\n  (h₀ : 2^x * 3^y = 1296) :\n  x + y = 8 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_709",
+    "statement": "theorem mathd_numbertheory_709\n  (n : ℕ)\n  (h₀ : 0 < n)\n  (h₁ : finset.card (nat.divisors (2 * n)) = 28)\n  (h₂ : finset.card (nat.divisors (3 * n)) = 30) :\n  finset.card (nat.divisors (6 * n)) = 35 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_461",
+    "statement": "theorem mathd_numbertheory_461\n  (n : ℕ)\n  (h₀ : n = finset.card (finset.filter (λ x, gcd x 8 = 1) (finset.Icc 1 7))) :\n  (3^n) % 8 = 1 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_43",
+    "statement": "theorem mathd_numbertheory_43 :\n  is_greatest {n : ℕ | 15^n ∣ 942! } 233 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "numbertheory_xsqpysqintdenomeq",
+    "statement": "theorem numbertheory_xsqpysqintdenomeq\n  (x y : ℚ)\n  (h₀ : (x^2 + y^2).denom = 1) :\n  x.denom = y.denom :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1973_p3",
+    "statement": "theorem imo_1973_p3\n  (a b : ℝ)\n  (h₀ : ∃ x, x^4 + a * x^3 + b * x^2 + a * x + 1 = 0) :\n  4 / 5 ≤ a^2 + b^2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_198",
+    "statement": "theorem mathd_numbertheory_198 :\n  (5^2005) % 100 = 25 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_149",
+    "statement": "theorem mathd_algebra_149\n  (f : ℝ → ℝ)\n  (h₀ : ∀ x < -5, f x = x^2 + 5)\n  (h₁ : ∀ x ≥ -5, f x = 3 * x -8)\n  (h₂ : fintype (f⁻¹' {10})) :\n  ∑ k in (f⁻¹' {10}).to_finset, k = 6 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_131",
+    "statement": "theorem mathd_algebra_131\n  (a b : ℝ)\n  (f : ℝ → ℝ)\n  (h₀ : ∀ x, f x = 2 * x^2 - 7 * x + 2)\n  (h₁ : f a = 0)\n  (h₂ : f b = 0)\n  (h₃ : a ≠ b) :\n  1 / (a - 1) + 1 / (b - 1) = -1 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1983_p9",
+    "statement": "theorem aime_1983_p9\n  (x : ℝ)\n  (h₀ : 0 < x ∧ x < real.pi) :\n  12 ≤ ((9 * (x^2 * (real.sin x)^2)) + 4) / (x * real.sin x) :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "amc12a_2009_p15",
+    "statement": "theorem amc12a_2009_p15\n  (n : ℕ)\n  (h₀ : 0 < n)\n  (h₁ : ∑ k in finset.Icc 1 n, (↑k * (complex.I^k)) = 48 + 49 * complex.I) :\n  n = 97 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_282",
+    "statement": "theorem mathd_algebra_282\n  (f : ℝ → ℝ)\n  (h₀ : ∀ x, (¬ irrational x) → f x = abs (int.floor x))\n  (h₁ : ∀ x, (irrational x) → f x = (int.ceil x)^2) :\n  f (8^(1/3)) + f (-real.pi) + f (real.sqrt 50) + f (9/2) = 79 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_156",
+    "statement": "theorem mathd_numbertheory_156\n  (n : ℕ)\n  (h₀ : 0 < n) :\n  nat.gcd (n + 7) (2 * n + 1) ≤ 13 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2008_p15",
+    "statement": "theorem amc12a_2008_p15\n  (k : ℕ)\n  (h₀ : k = 2008^2 + 2^2008) :\n  (k^2 + 2^k) % 10 = 6 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1974_p5",
+    "statement": "theorem imo_1974_p5\n  (a b c d s : ℝ)\n  (h₀ : s = a / (a + b + d) + b / (a + b + c) + c / (b + c + d) + d / (a + c + d)) :\n  1 < s ∧ s < 2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2020_p22",
+    "statement": "theorem amc12a_2020_p22\n  (S : finset ℕ)\n  (h₀ : ∀ (n : ℕ), n ∈ S ↔ 5 ∣ n ∧ nat.lcm 5! n = 5 * nat.gcd 10! n) :\n  S.card = 1 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1967_p3",
+    "statement": "theorem imo_1967_p3\n  (k m n : ℕ)\n  (c : ℕ → ℕ)\n  (h₀ : 0 < k ∧ 0 < m ∧ 0 < n)\n  (h₁ : ∀ s, c s = s * (s + 1))\n  (h₂ : nat.prime (k + m + 1))\n  (h₃ : n + 1 < k + m + 1) :\n  (∏ i in finset.Icc 1 n, c i) ∣ (∏ i in finset.Icc 1 n, (c (m + i) - c k)) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1990_p2",
+    "statement": "theorem aime_1990_p2 :\n  (52 + 6 * real.sqrt 43)^((3 : ℝ) / 2) - (52 - 6 * real.sqrt 43)^((3 : ℝ) / 2)  = 828 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_232",
+    "statement": "theorem mathd_numbertheory_232\n  (x y z : zmod 31)\n  (h₀ : x = 3⁻¹)\n  (h₁ : y = 5⁻¹)\n  (h₂ : z = (x + y)⁻¹) :\n  z = 29 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_530",
+    "statement": "theorem mathd_numbertheory_530\n  (n k : ℕ)\n  (h₀ : 0 < n ∧ 0 < k)\n  (h₀ : (n : ℝ) / k < 6)\n  (h₁ : (5 : ℝ) < n / k) :\n  22 ≤ (nat.lcm n k) / (nat.gcd n k) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_77",
+    "statement": "theorem mathd_algebra_77\n  (a b : ℝ)\n  (f : ℝ → ℝ)\n  (h₀ : a ≠ 0 ∧ b ≠ 0)\n  (h₁ : ∀ x, f x = x^2 + a * x + b)\n  (h₂ : f a = 0)\n  (h₃ : f b = 0) :\n  a = 1 ∧ b = -2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1988_p3",
+    "statement": "theorem aime_1988_p3\n  (x : ℝ)\n  (h₀ : 0 < x)\n  (h₁ : real.logb 2 (real.logb 8 x) = real.logb 8 (real.logb 2 x)) :\n  (real.logb 2 x)^2 = 27 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_690",
+    "statement": "theorem mathd_numbertheory_690 :\n  is_least {a : ℕ | 0 < a ∧ a ≡ 2 [MOD 3] ∧ a ≡ 4 [MOD 5] ∧ a ≡ 6 [MOD 7] ∧ a ≡ 8 [MOD 9]} 314 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2016_p2",
+    "statement": "theorem amc12a_2016_p2\n  (x : ℝ)\n  (h₀ : (10:ℝ)^x * 100^(2 * x) = 1000^5) :\n  x = 3 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1988_p4",
+    "statement": "theorem aime_1988_p4\n  (n : ℕ)\n  (a : ℕ → ℝ)\n  (h₀ : ∀ n, abs (a n) < 1)\n  (h₁ : ∑ k in finset.range n, (abs (a k)) = 19 + abs (∑ k in finset.range n, a k)) :\n  20 ≤ n :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2003_p1",
+    "statement": "theorem amc12a_2003_p1\n  (u v : ℕ → ℕ)\n  (h₀ : ∀ n, u n = 2 * n + 2)\n  (h₁ : ∀ n, v n = 2 * n + 1) :\n  (∑ k in finset.range(2003), u k) - (∑ k in finset.range(2003), v k) = 2003 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_405",
+    "statement": "theorem mathd_numbertheory_405\n  (a b c : ℕ)\n  (t : ℕ → ℕ)\n  (h₀ : t 0 = 0)\n  (h₁ : t 1 = 1)\n  (h₂ : ∀ n > 1, t n = t (n - 2) + t (n - 1))\n  (h₃ : a ≡ 5 [MOD 16])\n  (h₄ : b ≡ 10 [MOD 16])\n  (h₅ : c ≡ 15 [MOD 16]) :\n  (t a + t b + t c) % 7 = 5 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2003_p25",
+    "statement": "theorem amc12a_2003_p25\n  (a b : ℝ)\n  (f : ℝ → ℝ)\n  (h₀ : 0 < b)\n  (h₁ : ∀ x, f x = real.sqrt (a * x^2 + b * x))\n  (h₂ : {x | 0 ≤ f x} = f '' {x | 0 ≤ f x}) :\n  a = 0 ∨ a = -4 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aime_1997_p12",
+    "statement": "theorem aime_1997_p12\n  (x : ℝ)\n  (h₀ : x = (∑ n in finset.Icc (1 : ℕ) 44, real.cos (n * π / 180)) / (∑ n in finset.Icc (1 : ℕ) 44, real.sin (n * π / 180))) :\n  int.floor (100 * x) = 241 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_421",
+    "statement": "theorem mathd_algebra_421\n  (a b c d : ℝ)\n  (h₀ : b = a^2 + 4 * a + 6)\n  (h₁ : b = 1 / 2 * a^2 + a + 6)\n  (h₂ : d = c^2 + 4 * c + 6)\n  (h₃ : d = 1 / 2 * c^2 + c + 6)\n  (h₄ : a ≤ c) :\n  c - a = 6 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_110",
+    "statement": "theorem mathd_numbertheory_110\n  (a b : ℕ)\n  (h₀ : 0 < a ∧ 0 < b ∧ b ≤ a)\n  (h₁ : (a + b) % 10 = 2)\n  (h₂ : (2 * a + b) % 10 = 1) :\n  (a - b) % 10 = 6 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2010_p10",
+    "statement": "theorem amc12a_2010_p10\n  (p q : ℝ)\n  (a : ℕ → ℝ)\n  (h₀ : ∀ n, a (n + 2) - a (n + 1) = a (n + 1) - a n)\n  (h₁ : a 1 = p)\n  (h₂ : a 2 = 9)\n  (h₃ : a 3 = 3 * p - q)\n  (h₄ : a 4 = 3 * p + q) :\n  a 2010 = 8041 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "induction_divisibility_9div10tonm1",
+    "statement": "theorem induction_divisibility_9div10tonm1\n  (n : ℕ)\n  (h₀ : 0 < n) :\n  9 ∣ (10^n - 1) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "aimeI_2000_p7",
+    "statement": "theorem aimeI_2000_p7\n  (x y z : ℝ)\n  (m : ℚ)\n  (h₀ : 0 < x ∧ 0 < y ∧ 0 < z)\n  (h₁ : x * y * z = 1)\n  (h₂ : x + 1 / z = 5)\n  (h₃ : y + 1 / x = 29)\n  (h₄ : z + 1 / y = m)\n  (h₅ : 0 < m) :\n  ↑m.denom + m.num = 5 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1987_p6",
+    "statement": "theorem imo_1987_p6\n  (p : ℕ)\n  (f : ℕ → ℕ)\n  (h₀ : ∀ x, f x = x^2 + x + p)\n  (h₀ : ∀ k : ℕ, k ≤ nat.floor (real.sqrt (p / 3)) → nat.prime (f k)) :\n  ∀ i ≤ p - 2, nat.prime (f i) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1966_p4",
+    "statement": "theorem imo_1966_p4\n  (n : ℕ)\n  (x : ℝ)\n  (h₀ : ∀ k : ℕ, 0 < k → ∀ m : ℤ, x ≠ m * π / (2^k))\n  (h₁ : 0 < n) :\n  ∑ k in finset.Icc 1 n, (1 / real.sin ((2^k) * x)) = 1 / real.tan x - 1 / real.tan ((2^n) * x) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2009_p25",
+    "statement": "theorem amc12a_2009_p25\n  (a : ℕ → ℝ)\n  (h₀ : a 1 = 1)\n  (h₁ : a 2 = 1 / real.sqrt 3)\n  (h₂ : ∀ n, 1 ≤ n → a (n + 2) = (a n + a (n + 1)) / (1 - a n * a (n + 1))) :\n  abs (a 2009) = 0 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_89",
+    "statement": "theorem mathd_algebra_89\n  (b : ℝ)\n  (h₀ : b ≠ 0) :\n  (7 * b^3)^2 * (4 * b^2)^(-(3 : ℤ)) = 49/64 :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "mathd_algebra_437",
+    "statement": "theorem mathd_algebra_437\n  (x y : ℝ)\n  (n : ℤ)\n  (h₀ : x^3 = -45)\n  (h₁ : y^3 = -101)\n  (h₂ : x < n)\n  (h₃ : ↑n < y) :\n  n = -4 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1990_p3",
+    "statement": "theorem imo_1990_p3\n  (n : ℕ)\n  (h₀ : 2 ≤ n)\n  (h₁ : n^2 ∣ 2^n + 1) :\n  n = 3 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_326",
+    "statement": "theorem mathd_numbertheory_326\n  (n : ℕ)\n  (h₀ : (↑n - 1) * ↑n * (↑n + 1) = (720 : ℤ)) :\n  (n + 1) = 10 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "numbertheory_prmdvsneqnsqmodpeq0",
+    "statement": "theorem numbertheory_prmdvsneqnsqmodpeq0\n  (n : ℤ)\n  (p : ℕ)\n  (h₀ : nat.prime p) :\n  ↑p ∣ n ↔ (n^2) % p = 0 :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "mathd_numbertheory_126",
+    "statement": "theorem mathd_numbertheory_126\n  (x a : ℕ)\n  (h₀ : 0 < x ∧ 0 < a)\n  (h₁ : nat.gcd a 40 = x + 3)\n  (h₂ : nat.lcm a 40 = x * (x + 3))\n  (h₃ : ∀ b : ℕ, 0 < b → nat.gcd b 40 = x + 3 ∧ nat.lcm b 40 = x * (x + 3) → a ≤ b) :\n  a = 8 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "induction_ineq_nsqlefactn",
+    "statement": "theorem induction_ineq_nsqlefactn\n  (n : ℕ)\n  (h₀ : 4 ≤ n) :\n  n^2 ≤ n! :=\nbegin\n  sorry\nend",
+    "is_solved": true
+  },
+  {
+    "name": "induction_seq_mul2pnp1",
+    "statement": "theorem induction_seq_mul2pnp1\n  (n : ℕ)\n  (u : ℕ → ℕ)\n  (h₀ : u 0 = 0)\n  (h₁ : ∀ n, u (n + 1) = 2 * u n + (n + 1)) :\n  u n = 2^(n + 1) - (n + 2) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1993_p5",
+    "statement": "theorem imo_1993_p5 :\n  ∃ f : ℕ → ℕ, f 1 = 2 ∧ ∀ n, f (f n) = f n + n ∧ (∀ n, f n < f (n + 1)) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1977_p5",
+    "statement": "theorem imo_1977_p5\n  (a b q r : ℕ)\n  (h₀ : r < a + b)\n  (h₁ : a^2 + b^2 = (a + b) * q + r)\n  (h₂ : q^2 + r = 1977) :\n  (abs ((a:ℤ) - 22) = 15 ∧ abs ((b:ℤ) - 22) = 28) ∨ (abs ((a:ℤ) - 22) = 28 ∧ abs ((b:ℤ) - 22) = 15) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2020_p13",
+    "statement": "theorem amc12a_2020_p13\n  (a b c : ℕ)\n  (n : nnreal)\n  (h₀ : n ≠ 1)\n  (h₁ : 1 < a ∧ 1 < b ∧ 1 < c)\n  (h₂ : (n * ((n * (n^(1 / c)))^(1 / b)))^(1 / a) = (n^25)^(1 / 36)) :\n  b = 3 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1964_p1_1",
+    "statement": "theorem imo_1964_p1_1\n  (n : ℕ)\n  (h₀ : 7 ∣ (2^n - 1)) :\n  3 ∣ n :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1966_p5",
+    "statement": "theorem imo_1966_p5\n  (x a : ℕ → ℝ)\n  (h₀ : a 1 ≠ a 2)\n  (h₁ : a 1 ≠ a 3)\n  (h₂ : a 1 ≠ a 4)\n  (h₃ : a 2 ≠ a 3)\n  (h₄ : a 2 ≠ a 4)\n  (h₅ : a 3 ≠ a 4)\n  (h₆ : abs (a 1 - a 2) * x 2 + abs (a 1 - a 3) * x 3 + abs (a 1 - a 4) * x 4 = 1)\n  (h₇ : abs (a 2 - a 1) * x 1 + abs (a 2 - a 3) * x 3 + abs (a 2 - a 4) * x 4 = 1)\n  (h₈ : abs (a 3 - a 1) * x 1 + abs (a 3 - a 2) * x 2 + abs (a 3 - a 4) * x 4 = 1)\n  (h₉ : abs (a 4 - a 1) * x 1 + abs (a 4 - a 2) * x 2 + abs (a 4 - a 3) * x 3 = 1) :\n  x 2 = 0 ∧ x 3 = 0 ∧ x 1 = 1 / abs (a 1 - a 4) ∧ x 4 = 1 / abs (a 1 - a 4) :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2003_p24",
+    "statement": "theorem amc12a_2003_p24 :\n  is_greatest {y : ℝ | ∃ (a b : ℝ), 1 < b ∧ b ≤ a ∧ y = real.logb a (a/b) + real.logb b (b/a)} 0 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "algebra_amgm_sumasqdivbsqgeqsumbdiva",
+    "statement": "theorem algebra_amgm_sumasqdivbsqgeqsumbdiva\n  (a b c : ℝ)\n  (h₀ : 0 < a ∧ 0 < b ∧ 0 < c) :\n  a^2 / b^2 + b^2 / c^2 + c^2 / a^2 ≥ b / a + c / b + a / c :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2002_p12",
+    "statement": "theorem amc12a_2002_p12\n  (f : ℝ → ℝ)\n  (k : ℝ)\n  (h₀ : ∀ x, f x = x^2 - 63 * x + k)\n  (h₁ : set.subset (f ⁻¹' {0}) {x : ℝ | ∃ n : ℕ, ↑n = x ∧ nat.prime n}) :\n  k = 122 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2010_p11",
+    "statement": "theorem amc12a_2010_p11\n  (x b : ℝ)\n  (h₀ : 0 < b)\n  (h₁ : (7 : ℝ)^(x + 7) = 8^x)\n  (h₂ : x = real.logb b (7^7)) :\n  b = 8/7 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12a_2002_p1",
+    "statement": "theorem amc12a_2002_p1\n  (f : ℂ → ℂ)\n  (h₀ : ∀ x, f x = (2 * x + 3) * (x - 4) + (2 * x + 3) * (x - 6))\n  (h₁ : fintype (f ⁻¹' {0})) :\n  ∑ y in (f⁻¹' {0}).to_finset, y = 7 / 2 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "amc12b_2002_p3",
+    "statement": "theorem amc12b_2002_p3\n  (S : finset ℕ)\n  -- note: we use (n^2 + 2 - 3 * n) over (n^2 - 3 * n + 2) because nat subtraction truncates the latter at 1 and 2\n  (h₀ : ∀ (n : ℕ), n ∈ S ↔ 0 < n ∧ nat.prime (n^2 + 2 - 3 * n)) :\n  S.card = 1 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "imo_1979_p1",
+    "statement": "theorem imo_1979_p1\n  (p q : ℕ)\n  (h₀ : 0 < q)\n  (h₁ : ∑ k in finset.Icc (1 : ℕ) 1319, ((-1)^(k + 1) * ((1 : ℝ)/k)) = p/q) :\n  1979 ∣ p :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_algebra_482",
+    "statement": "theorem mathd_algebra_482\n  (m n : ℕ)\n  (k : ℝ)\n  (f : ℝ → ℝ)\n  (h₀ : nat.prime m)\n  (h₁ : nat.prime n)\n  (h₂ : ∀ x, f x = x^2 - 12 * x + k)\n  (h₃ : f m = 0)\n  (h₄ : f n = 0)\n  (h₅ : m ≠ n) :\n  k = 35 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  },
+  {
+    "name": "mathd_numbertheory_668",
+    "statement": "theorem mathd_numbertheory_668\n  (l r : zmod 7)\n  (h₀ : l = (2 + 3)⁻¹)\n  (h₁ : r = 2⁻¹ + 3⁻¹) :\n  l - r = 1 :=\nbegin\n  sorry\nend",
+    "is_solved": false
+  }
+]
