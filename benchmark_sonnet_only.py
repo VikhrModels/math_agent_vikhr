@@ -136,7 +136,7 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     
     return micro_subset
 
-def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool:
+def verify_lean_proof(theorem_name: str, theorem_statement: str, generated_proof_body: str) -> bool:
     """
     Verifies a generated Lean proof by creating a temporary Lean file and compiling it.
 
@@ -200,7 +200,7 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
         logger.debug(f"Full Lean output for {temp_file_path.name}:\n{output}")
 
         if process.returncode != 0 or "error:" in output.lower():
-            logger.warning(f"  ❌ Verification failed for {theorem_statement.splitlines()[0]}: Lean reported errors.")
+            logger.warning(f"  ❌ Verification failed for {theorem_name}: Lean reported errors.")
             # Extract and log only error lines for clarity
             error_lines = [line for line in output.splitlines() if "error:" in line.lower()]
             if error_lines:
@@ -215,7 +215,7 @@ def verify_lean_proof(theorem_statement: str, generated_proof_body: str) -> bool
              logger.warning(f"  ❌ Verification failed: .olean file was not produced, but no errors were reported.")
              return False
 
-        logger.info(f"  ✅ Verification successful for {theorem_statement.splitlines()[0]}.")
+        logger.info(f"  ✅ Verification successful for {theorem_name}.")
         return True
 
     except FileNotFoundError:
@@ -239,7 +239,8 @@ def extract_proof_body(llm_response_content: str) -> str | None:
     Extracts the Lean proof body from the LLM's response.
 
     The function searches for a Lean code block in markdown, then extracts
-    the `begin...end` block or a `by` tactic. It handles nested blocks.
+    the `begin...end` block or a `by` tactic. It handles nested blocks
+    and cases where the model returns the full theorem.
     """
     # First, try to find Lean code in markdown blocks
     markdown_match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
@@ -249,36 +250,42 @@ def extract_proof_body(llm_response_content: str) -> str | None:
         # If no markdown, use the whole response, stripped of leading/trailing whitespace
         content = llm_response_content.strip()
 
-    # Handle `by` expressions first
-    if content.lower().startswith('by '):
-        logger.info("  Extracted proof body from a `by` expression.")
-        return content
-
-    # Handle `begin...end` blocks, including nested ones
-    begin_match = re.search(r'\bbegin\b', content, re.IGNORECASE)
-    if begin_match:
-        start_index = begin_match.start()
-        open_blocks = 0
-        current_pos = start_index
+    # More robustly find the start of the proof, which can be `begin` or `by`
+    # This handles cases where the full theorem is repeated in the response.
+    begin_match = re.search(r'\b(begin|by\b)', content, re.IGNORECASE | re.DOTALL)
+    
+    if not begin_match:
+        logger.warning("  Failed to find 'begin' or 'by' keyword in the response content.")
+        logger.debug(f"    Full response content:\n{llm_response_content}")
+        return None
         
-        # Simple token-like scanner for begin/end
-        # This is more robust than a single regex for nested blocks.
+    keyword = begin_match.group(1).lower()
+    start_index = begin_match.start()
+    
+    # Slice content from the keyword onward
+    proof_search_area = content[start_index:]
+
+    if keyword == 'by':
+        # The proof is the rest of the line
+        proof_body = proof_search_area.split('\n', 1)[0].strip()
+        logger.info("  Extracted proof body from a `by` expression.")
+        return proof_body
+
+    if keyword == 'begin':
+        # Find matching 'end' for the 'begin' block
+        open_blocks = 0
+        current_pos = 0
         pattern = re.compile(r'\b(begin|end)\b', re.IGNORECASE)
         
-        while current_pos < len(content):
-            match = pattern.search(content, current_pos)
-            if not match:
-                break # No more begin/end found
-
+        for match in pattern.finditer(proof_search_area):
             if match.group(1).lower() == 'begin':
                 open_blocks += 1
             elif match.group(1).lower() == 'end':
                 open_blocks -= 1
             
-            current_pos = match.end()
-
             if open_blocks == 0:
-                proof_body = content[start_index:current_pos]
+                end_pos = match.end()
+                proof_body = proof_search_area[:end_pos]
                 logger.info("  Extracted proof body from a `begin...end` block.")
                 return proof_body
 
@@ -343,7 +350,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
                 "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
                 "X-Title": "Math Agent Vikhr",
             },
-            max_tokens=4096,
+            max_tokens=16000,
             temperature=0.1,
         )
 
@@ -359,13 +366,15 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             return False
         
         generated_content = message.content
+        finish_reason = completion.choices[0].finish_reason
+        logger.info(f"LLM response for {theorem['name']} finished with reason: {finish_reason}.")
         
         logger.info(f"Received LLM response for {theorem['name']}. Content:\n{generated_content[:200]}...")
 
         generated_proof_body = extract_proof_body(generated_content)
         if generated_proof_body:
             logger.info(f"  Attempting to verify proof for {theorem['name']}...")
-            return verify_lean_proof(theorem['statement'], generated_proof_body)
+            return verify_lean_proof(theorem['name'], theorem['statement'], generated_proof_body)
         else:
             logger.warning(f"  ❌ Failed to extract Lean proof body from LLM response for {theorem['name']}. Skipping verification.")
             return False
@@ -449,8 +458,11 @@ def main():
         for future in concurrent.futures.as_completed(future_to_theorem):
             theorem_name = future_to_theorem[future]
             try:
-                success, name = future.result()
+                success, name = future.result(timeout=360) # 6 min timeout per theorem
                 results[name] = success
+            except concurrent.futures.TimeoutError:
+                logger.error(f"❌ Timeout processing theorem {theorem_name}")
+                results[theorem_name] = False
             except Exception as e:
                 logger.error(f"❌ Error processing theorem {theorem_name}: {e}")
                 results[theorem_name] = False
