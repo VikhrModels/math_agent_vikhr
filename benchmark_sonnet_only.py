@@ -238,27 +238,49 @@ def extract_proof_body(llm_response_content: str) -> str | None:
     """
     Extracts the Lean proof body from the LLM's response.
 
-    The function searches for a Lean code block in markdown and then validates
-    if the content is a standard proof format (a `begin...end` block or a `by` tactic).
+    The function searches for a Lean code block in markdown, then extracts
+    the `begin...end` block or a `by` tactic. It handles nested blocks.
     """
     # First, try to find Lean code in markdown blocks
-    match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
-    if match:
-        content = match.group(1).strip()
+    markdown_match = re.search(r'```(?:lean)?\s*(.*?)\s*```', llm_response_content, re.DOTALL | re.IGNORECASE)
+    if markdown_match:
+        content = markdown_match.group(1).strip()
     else:
-        # If no markdown, use the whole response as content, stripped of leading/trailing whitespace
+        # If no markdown, use the whole response, stripped of leading/trailing whitespace
         content = llm_response_content.strip()
 
-    # The proof must be a self-contained block.
-    # Check for 'begin...end' or 'by ...'
-    # Use re.DOTALL to match newlines within begin...end
-    if re.match(r'begin.*end', content, re.DOTALL | re.IGNORECASE):
-        logger.info("  Extracted proof body from a `begin...end` block.")
-        return content
-    
+    # Handle `by` expressions first
     if content.lower().startswith('by '):
         logger.info("  Extracted proof body from a `by` expression.")
         return content
+
+    # Handle `begin...end` blocks, including nested ones
+    begin_match = re.search(r'\bbegin\b', content, re.IGNORECASE)
+    if begin_match:
+        start_index = begin_match.start()
+        open_blocks = 0
+        current_pos = start_index
+        
+        # Simple token-like scanner for begin/end
+        # This is more robust than a single regex for nested blocks.
+        pattern = re.compile(r'\b(begin|end)\b', re.IGNORECASE)
+        
+        while current_pos < len(content):
+            match = pattern.search(content, current_pos)
+            if not match:
+                break # No more begin/end found
+
+            if match.group(1).lower() == 'begin':
+                open_blocks += 1
+            elif match.group(1).lower() == 'end':
+                open_blocks -= 1
+            
+            current_pos = match.end()
+
+            if open_blocks == 0:
+                proof_body = content[start_index:current_pos]
+                logger.info("  Extracted proof body from a `begin...end` block.")
+                return proof_body
 
     logger.warning("  Failed to extract a valid Lean proof body (a `begin...end` block or `by ...`) from LLM response.")
     logger.debug(f"    Full response content:\n{llm_response_content}")
@@ -321,7 +343,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
                 "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
                 "X-Title": "Math Agent Vikhr",
             },
-            max_tokens=2048,
+            max_tokens=4096,
             temperature=0.1,
         )
 
