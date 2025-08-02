@@ -12,6 +12,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 import concurrent.futures
+from lean_verifier import LeanVerifier
 
 # Import configuration
 from config import (
@@ -34,9 +35,8 @@ from config import (
 # This section defines constants and default settings for the script.
 # These can be customized as needed.
 
-# Path to Lean 4 executable. Make sure 'lean' is available in PATH,
-# or specify the full path, e.g., '/opt/lean4/bin/lean'
-LEAN_EXECUTABLE_PATH = "lean"
+# Initialize a single LeanVerifier instance (Lean 4 + Lake)
+verifier = LeanVerifier()
 
 # Micro-subset file for tracking selected tasks
 MICRO_SUBSET_FILE = Path(__file__).parent / "micro_subset.txt"
@@ -144,95 +144,41 @@ def verify_lean_proof(theorem_name: str, theorem_statement: str, generated_proof
     that the generated proof is valid within the project's context, including all
     necessary imports and dependencies.
     """
-    logger.info("Attempting Lean 3 verification.")
+    logger.info("Attempting Lean 4 verification via Lake.")
 
     if not generated_proof_body.strip():
         logger.warning("  ❌ Empty proof body provided.")
         return False
 
-    # Find the part of the statement before the proof begins.
-    # The statements in valid.json end with `:= sorry` or `:= begin sorry end`.
-    statement_base_match = re.search(r'(.*):=\s*(begin\s*sorry\s*end|sorry)', theorem_statement, re.DOTALL)
-    if not statement_base_match:
-        logger.error("  ❌ Could not find `:= sorry` or `:= begin sorry end` in the theorem statement.")
+    # Split off the original (unsolved) proof placeholder after ':='
+    if ':=' not in theorem_statement:
+        logger.error("  ❌ Expected ':=' in theorem statement but not found.")
         logger.debug(f"    Full statement: {theorem_statement}")
         return False
-    statement_base = statement_base_match.group(1).strip()
+    statement_base = theorem_statement.split(':=')[0].strip()
 
     # Create complete theorem with generated proof
     full_lean_code = statement_base + " :=\n" + generated_proof_body
 
-    # The miniF2F project structure is required for verification, as it contains
-    # dependent libraries like mathlib. We create the temp file within its source directory.
-    src_dir = MINIF2F_DIR / "lean" / "src"
-    src_dir.mkdir(parents=True, exist_ok=True)  # Ensure src dir exists
-
-    # Create a temporary file inside the miniF2F project's src directory
-    # Use a fixed name to avoid cluttering the directory with failed attempts
-    temp_file_name = f"temp_proof_{os.getpid()}_{time.time_ns()}.lean"
-    temp_file_path = src_dir / temp_file_name
-    olean_path = temp_file_path.with_suffix('.olean')
-
-    # The `minif2f_import` file contains all necessary imports for the miniF2F theorems.
-    # It must be included for the proof to be verifiable.
-    lean_imports = "import minif2f_import\n\n"
+    # Prepare full Lean code with necessary imports for Lean 4 project
+    lean_imports = "import MiniF2F.Minif2fImport\n\n"
+    lean_code = lean_imports + full_lean_code
 
     try:
-        with temp_file_path.open("w", encoding='utf-8') as f:
-            f.write(lean_imports)
-            f.write(full_lean_code)
-
-        # We run `lean --make` from the root of the miniF2F project.
-        # This command compiles the file and its dependencies, which is the
-        # standard way to build a Lean project file.
-        process = subprocess.run(
-            [LEAN_EXECUTABLE_PATH, "--make", f"lean/src/{temp_file_name}"],
-            cwd=str(MINIF2F_DIR),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=LEAN_TIMEOUT
-        )
-
-        output = process.stdout + process.stderr
-
-        # Log full Lean output for debugging
-        logger.debug(f"Full Lean output for {temp_file_path.name}:\n{output}")
-
-        if process.returncode != 0 or "error:" in output.lower():
-            logger.warning(f"  ❌ Verification failed for {theorem_name}: Lean reported errors.")
-            # Extract and log only error lines for clarity
-            error_lines = [line for line in output.splitlines() if "error:" in line.lower()]
-            if error_lines:
-                logger.warning("  Lean errors:")
-                for error in error_lines:
-                    logger.warning(f"    {error.strip()}")
+        result = verifier.verify_lean_code(lean_code, theorem_name)
+        if result["success"]:
+            logger.info(f"  ✅ Verification successful for {theorem_name}.")
+            return True
+        else:
+            logger.warning(f"  ❌ Verification failed for {theorem_name}.")
+            if result.get("error"):
+                logger.debug(f"    Error: {result['error']}")
+            if result.get("output"):
+                logger.debug(f"    Output: {result['output']}")
             return False
-
-        # For `lean --make`, a successful compilation often produces no output.
-        # The presence of the .olean file and no errors is a good indicator of success.
-        if not olean_path.exists():
-             logger.warning(f"  ❌ Verification failed: .olean file was not produced, but no errors were reported.")
-             return False
-
-        logger.info(f"  ✅ Verification successful for {theorem_name}.")
-        return True
-
-    except FileNotFoundError:
-        logger.error(f"  ❌ Lean executable '{LEAN_EXECUTABLE_PATH}' not found. Make sure Lean 3 is installed and in your PATH.")
-        return False
-    except subprocess.TimeoutExpired:
-        logger.error(f"  ❌ Lean verification timed out for {temp_file_path.name} after {LEAN_TIMEOUT} seconds.")
-        return False
     except Exception as e:
-        logger.error(f"  ❌ An unexpected error occurred during Lean verification for {temp_file_path.name}: {e}")
+        logger.error(f"  ❌ An unexpected error occurred during Lean verification for {theorem_name}: {e}")
         return False
-    finally:
-        # Cleanup the temporary files
-        if temp_file_path.exists():
-            temp_file_path.unlink()
-        if olean_path.exists():
-            olean_path.unlink()
 
 def extract_proof_body(llm_response_content: str) -> str | None:
     """
@@ -266,10 +212,35 @@ def extract_proof_body(llm_response_content: str) -> str | None:
     proof_search_area = content[start_index:]
 
     if keyword == 'by':
-        # The proof is the rest of the line
-        proof_body = proof_search_area.split('\n', 1)[0].strip()
-        logger.info("  Extracted proof body from a `by` expression.")
-        return proof_body
+        # For 'by' expressions, we need to capture the entire proof
+        # Look for the end of the proof (usually a newline or end of content)
+        # But be careful not to include the rest of the theorem if it's repeated
+        
+        # Find where the proof ends - either at end of content or before another theorem declaration
+        lines = proof_search_area.split('\n')
+        proof_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            # Stop if we hit another theorem declaration or empty line followed by theorem-like content
+            if (line.startswith('theorem ') or 
+                line.startswith('lemma ') or 
+                line.startswith('def ') or
+                (line == '' and any(l.strip().startswith('theorem ') for l in lines[lines.index(line)+1:lines.index(line)+3]))):
+                break
+            if line:  # Only add non-empty lines
+                proof_lines.append(line)
+        
+        proof_body = '\n  '.join(proof_lines)
+        
+        # Check if the proof looks complete (not truncated)
+        if proof_body and not proof_body.strip().endswith('...'):
+            logger.info("  Extracted proof body from a `by` expression.")
+            return proof_body
+        else:
+            logger.warning("  ❌ Extracted proof appears to be incomplete or truncated.")
+            logger.debug(f"    Extracted proof: {proof_body}")
+            return None
 
     if keyword == 'begin':
         # Find matching 'end' for the 'begin' block
@@ -321,18 +292,40 @@ def generate_and_verify_proof(theorem: dict) -> bool:
 
     try:
         system_prompt = (
-            "You are a highly qualified Lean 3.42.1 theorem prover. "
-            "Your task is to generate valid, formal proofs for mathematical theorems in Lean 3.42.1. "
-            "You will be given a theorem with a `sorry` placeholder. You must replace the `sorry` with a complete proof. "
-            "Your response must be ONLY the Lean code for the proof, starting with `begin` and ending with `end`, or starting with `by`. "
-            "The code should be wrapped in a markdown block with the language specifier `lean` (e.g., ```lean ... ```). "
-            "Do not include any additional explanations, comments, introductions, or conclusions."
+            "You are a Lean 4 theorem prover. Your task is to replace `sorry` with a complete proof. "
+            "Generate ONLY the proof code, no explanations or comments. "
+            "Use simple tactics: `simp`, `norm_num`, `ring`, `linarith`, `tauto`, `exact`, `apply`, `rw`. "
+            "For simple calculations use `norm_num` or `ring`. "
+            "For linear equations use `linarith`. "
+            "For rewriting use `rw [h₀, h₁]` then `ring` or `linarith`. "
+            "Response must be ONLY the proof code in ```lean``` block. "
+            "Keep proofs short and direct."
         )
 
         user_prompt = (
-            f"Prove the following theorem in Lean 3.42.1 by replacing `sorry` with a full proof. "
-            "Your response should be only the proof block (e.g., `begin ... end` or `by ...`), "
-            "wrapped in a Lean code block (```lean ... ```).\n\n"
+            f"Replace `sorry` with a simple Lean 4 proof using only basic tactics (simp, norm_num, ring, linarith, tauto, exact, apply, rw, cases, induction). Return ONLY the proof code in ```lean``` block.\n\n"
+            f"Examples of simple proofs:\n"
+            f"```lean\n"
+            f"theorem mathd_algebra_182 (y : ℂ) : 7 * (3 * y + 2) = 21 * y + 14 := by ring_nf\n"
+            f"```\n"
+            f"```lean\n"
+            f"theorem mathd_algebra_462 : ((1 : ℚ) / 2 + 1 / 3) * (1 / 2 - 1 / 3) = 5 / 36 := by norm_num\n"
+            f"```\n"
+            f"```lean\n"
+            f"theorem mathd_numbertheory_132 : 2004 % 12 = 0 := by norm_num\n"
+            f"```\n"
+            f"```lean\n"
+            f"theorem mathd_algebra_455 (x : ℝ) (h₀ : 2 * (2 * (2 * (2 * x))) = 48) : x = 3 := by linarith\n"
+            f"```\n"
+            f"```lean\n"
+            f"theorem amc12a_2008_p2 (x : ℝ) (h₀ : x * (1 / 2 + 2 / 3) = 1) : x = 6 / 7 := by linarith\n"
+            f"```\n"
+            f"```lean\n"
+            f"theorem mathd_algebra_48 (q e : ℂ) (h₀ : q = 9 - 4 * Complex.I) (h₁ : e = -3 - 4 * Complex.I) : q - e = 12 := by\n"
+            f"  rw [h₀, h₁]\n"
+            f"  ring\n"
+            f"```\n\n"
+            f"Now prove this theorem:\n\n"
             f"```lean\n{theorem['statement']}\n```"
         )
 

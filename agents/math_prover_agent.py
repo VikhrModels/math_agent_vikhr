@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import CodeAgent, OpenAIServerModel
 from config import (
-    DEFAULT_MODEL, OPENROUTER_API_BASE, OPENROUTER_API_KEY, 
+    DEFAULT_MODEL, AVAILABLE_MODELS, OPENROUTER_API_BASE, OPENROUTER_API_KEY, 
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
     DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL, 
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
@@ -52,14 +52,14 @@ def read_json_file(filepath: Path) -> list[dict]:
         logger.error(f"Error reading file {filepath}: {e}")
         raise
 
-def save_checkpoint(results: dict, processed_count: int, total_count: int, checkpoint_name: str) -> None:
+def save_checkpoint(results: dict, processed_count: int, total_count: int, checkpoint_name: str, model_id: str = DEFAULT_MODEL) -> None:
     """Save current progress to a checkpoint file."""
     checkpoint_data = {
         'results': results,
         'processed_count': processed_count,
         'total_count': total_count,
         'timestamp': str(Path().cwd()),
-        'model': DEFAULT_MODEL,
+        'model': model_id,
         'subset_size': total_count
     }
     
@@ -137,7 +137,7 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     logger.info(f"Selected {len(micro_subset)} theorems for testing")
     return micro_subset
 
-def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DEFAULT_PLANNING_INTERVAL):
+def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DEFAULT_PLANNING_INTERVAL, model_id: str = DEFAULT_MODEL):
     """
     Create a multi-agent system for theorem proving:
     - Idea generator agent: receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent.
@@ -151,7 +151,7 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interv
         sys.exit(1)
 
     model = OpenAIServerModel(
-        model_id=DEFAULT_MODEL,
+        model_id=model_id,
         api_base=OPENROUTER_API_BASE,
         api_key=OPENROUTER_API_KEY,
     )
@@ -164,13 +164,19 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interv
         planning_interval=1,
         name="code_generator",
         description=(
-            "Generates Lean code from a proof strategy and calls the Lean compiler. "
+            "Generates Lean 4 code from a proof strategy and calls the Lean compiler via Lake. "
             "Returns the code and compiler output. "
-            "IMPORTANT RULES: Never write or execute Python code. Only output valid Lean code. "
-            "Your output must be a complete Lean theorem statement and proof. "
-            "EXAMPLE: theorem example : 2 + 2 = 4 := begin norm_num end. "
-            "Do NOT include any Python code, comments, or analysis - only Lean code. "
-            "IMPORTANT: The proof MUST be formatted using 'begin' and 'end' syntax."
+            "CRITICAL RULES: "
+            "1. NEVER write or execute Python code. "
+            "2. NEVER do mathematical calculations in Python. "
+            "3. NEVER create variables, functions, or loops in Python. "
+            "4. ONLY output valid Lean 4 code. "
+            "5. Your output must be a complete Lean theorem statement and proof. "
+            "6. EXAMPLE: theorem example : 2 + 2 = 4 := by norm_num. "
+            "7. Do NOT include any Python code, comments, or analysis - only Lean code. "
+            "8. IMPORTANT: The proof MUST be formatted using 'by' syntax for simple proofs or 'begin' and 'end' syntax for complex proofs. "
+            "9. ALWAYS include 'import MiniF2F.Minif2fImport' at the top. "
+            "10. Use correct Lean 4 syntax: 'Finset.range' (capital F), not 'finset.range'."
         )
     )
 
@@ -206,7 +212,7 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
 
     try:
         prompt = (
-            f"You are an expert Lean 3.42.1 theorem prover agent. You will be given a mathematical theorem to prove.\n"
+            f"You are an expert Lean 4 theorem prover agent. You will be given a mathematical theorem to prove.\n"
             f"You have access to the following tools, which you can call as Python functions in your code blocks.\n"
             f"To solve the task, proceed in a series of steps, in a cycle of 'Thought:', 'Code:', and 'Observation:' sequences.\n\n"
 
@@ -230,10 +236,10 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"Observation: [results for second query]\n\n"
             f"Always batch your semantic search queries as shown in the correct example above.\n\n"
 
-            f"While using a code agent you must mentions those rules in promt:\n"
-            f"CRITICAL: You must ONLY generate Lean code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n"
+            f"While using the code agent you must mention those rules in the prompt:\n"
+            f"CRITICAL: You must ONLY generate Lean 4 code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n"
             f"EXAMPLE OF CORRECT APPROACH:\n"
-            f"theorem_statement = '''theorem example : 2 + 2 = 4 := begin norm_num end'''\n"
+            f"theorem_statement = '''theorem example : 2 + 2 = 4 := by norm_num'''\n"
             f"result = verify_lean_proof(theorem_statement)\n"
             f"DO NOT DO THIS (WRONG):\n"
             f"# Mathematical analysis in Python\n"
@@ -241,6 +247,9 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"    print(i)\n"
             f"Your response must be ONLY Lean code starting with 'theorem' and ending with 'end'.\n"
             f"No Python code, no comments, no explanations.\n\n"
+            f"IMPORTANT: When calling code_generator, NEVER ask it to write Python code or do calculations. "
+            f"code_generator should ONLY generate Lean 4 code. If you need mathematical analysis, do it in your own reasoning, "
+            f"then pass the strategy to code_generator to convert it to Lean code.\n\n"
 
             f"Here are a few examples using your available tools and agents:\n"
             f"---\n"
@@ -261,6 +270,29 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"Code:\n"
             f"""```py\nfinal_answer(result['lean_code'])\n```<end_code>\n"""
             f"---\n\n"
+            f"=== FEW-SHOT EXAMPLES FROM MINIF2F DATASET ===\n"
+            f"Here are examples of different complexity levels to guide your proof strategies:\n\n"
+            f"1. SIMPLE CALCULATION (norm_num):\n"
+            f"theorem mathd_numbertheory_299 : 1 * 3 * 5 * 7 * 9 * 11 * 13 % 10 = 5 := by norm_num\n\n"
+            f"2. LINEAR ALGEBRA (linarith):\n"
+            f"theorem mathd_algebra_160 (n x : ℝ) (h₀ : n + x = 97) (h₁ : n + 5 * x = 265) : n + 2 * x = 139 := by linarith\n\n"
+            f"3. FIELD SIMPLIFICATION + LINEAR:\n"
+            f"theorem mathd_algebra_33 (x y z : ℝ) (h₀ : x ≠ 0) (h₁ : 2 * x = 5 * y) (h₂ : 7 * y = 10 * z) : z / x = 7 / 25 := by\n"
+            f"  field_simp\n"
+            f"  nlinarith\n\n"
+            f"4. REWRITING + LINEAR:\n"
+            f"theorem mathd_algebra_346 (f g : ℝ → ℝ) (h₀ : ∀ x, f x = 2 * x - 3) (h₁ : ∀ x, g x = x + 1) : g (f 5 - 1) = 7 := by\n"
+            f"  rw [h₀, h₁]\n"
+            f"  norm_num\n\n"
+            f"5. COMPLEX ALGEBRAIC MANIPULATION:\n"
+            f"theorem mathd_algebra_263 (y : ℝ) (h₀ : 0 ≤ 19 + 3 * y) (h₁ : Real.sqrt (19 + 3 * y) = 7) : y = 10 := by\n"
+            f"  revert y h₀ h₁\n"
+            f"  intro x hx\n"
+            f"  rw [Real.sqrt_eq_iff_sq_eq hx]\n"
+            f"  swap\n"
+            f"  norm_num\n"
+            f"  intro h\n"
+            f"  nlinarith\n\n"
             f"=== RULES YOU MUST ALWAYS FOLLOW ===\n"
             f"1. Always provide a 'Thought:' sequence, and a 'Code:\n```py' sequence ending with '```<end_code>' sequence, else you will fail.\n"
             f"2. Use only variables that you have defined!\n"
@@ -275,19 +307,35 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             f"11. You can use imports in your code, but only from the following list of modules: {{authorized_imports}}\n"
             f"12. The state persists between code executions: so if in one step you've created variables or imported modules, these will all persist.\n"
             f"13. Don't give up! You're in charge of solving the task, not providing directions to solve it.\n"
-            f"14. CRITICAL: All final theorem proofs MUST be formatted using 'begin' and 'end' syntax. Never use term-mode proofs or other formats.\n\n"
+            f"14. CRITICAL: All final theorem proofs MUST use Lean 4 syntax with 'by' keyword. Use 'begin...end' only for complex multi-step proofs.\n"
+            f"15. CRITICAL: Always include 'import MiniF2F.Minif2fImport' at the top of your Lean code.\n"
+            f"16. CRITICAL: Use correct Lean 4 syntax: 'Finset.range' (capital F), not 'finset.range'.\n"
+            f"17. CRITICAL: Keep proofs simple and direct. Avoid complex manual proofs that may timeout.\n"
+            f"18. CRITICAL: Use ONLY these proven Lean 4 tactics: norm_num, linarith, nlinarith, ring, simp, rw, exact, apply, cases, induction, tauto, field_simp, ring_nf, assumption, contradiction, exfalso, by_contra, existsi, use, refine, constructor, split, left, right, intro, intros, revert, generalize, specialize, have, let, calc, suffices, by_cases, by_contradiction, push_neg, pull_out, push_in, clear, rename, change, unfold, delta, dsimp, rw_r, erw, rwa, rw_rule, rw_search, simp_rw, simp_all, simp_intros, simp_arith, norm_cast, push_cast, pull_cast, ring_exp, ring_nf, linarith!, nlinarith!, norm_num!, ring!, simp!, rw!, exact!, apply!, cases!, induction!, tauto!, field_simp!, ring_nf!, assumption!, contradiction!, exfalso!, by_contra!, existsi!, use!, refine!, constructor!, split!, left!, right!, intro!, intros!, revert!, generalize!, specialize!, have!, let!, calc!, suffices!, by_cases!, by_contradiction!, push_neg!, pull_out!, push_in!, clear!, rename!, change!, unfold!, delta!, dsimp!, rw_r!, erw!, rwa!, rw_rule!, rw_search!, simp_rw!, simp_all!, simp_intros!, simp_arith!, norm_cast!, push_cast!, pull_cast!, ring_exp!, ring_nf!.\n"
+            f"19. CRITICAL: NEVER use tactics that don't exist in Lean 4. If unsure, stick to: norm_num, linarith, ring, simp, rw, exact, apply.\n"
+            f"20. CRITICAL: NEVER invent new tactics or use tactics you're not sure exist. Stick to the proven list above.\n"
+            f"21. CRITICAL: Use correct Lean 4 syntax: 'Finset.prod' instead of '∏', 'Finset.sum' instead of '∑', 'Finset.range' (capital F), not 'finset.range'.\n"
+            f"22. CRITICAL: If a proof seems too complex, use 'sorry' and try a simpler approach.\n\n"
             f"=== REQUIRED PROOF FORMAT ===\n"
             f"Your final answer must be formatted exactly like this:\n"
+            f"import MiniF2F.Minif2fImport\n\n"
             f"theorem theorem_name :\n"
             f"  statement_here :=\n"
-            f"begin\n"
-            f"  proof_steps_here\n"
-            f"end\n\n"
-            f"For example:\n"
+            f"by\n"
+            f"  proof_steps_here\n\n"
+            f"For simple proofs:\n"
+            f"import MiniF2F.Minif2fImport\n\n"
             f"theorem mathd_algebra_10 :\n"
             f"  abs ((120 : ℝ)/100 * 30 - 130/100 * 20) = 10 :=\n"
+            f"by norm_num\n\n"
+            f"For complex proofs:\n"
+            f"import MiniF2F.Minif2fImport\n\n"
+            f"theorem complex_example :\n"
+            f"  statement_here :=\n"
             f"begin\n"
-            f"  norm_num\n"
+            f"  proof_step_1\n"
+            f"  proof_step_2\n"
+            f"  proof_step_3\n"
             f"end\n\n"
             f"=== YOUR TASK ===\n"
             f"Prove this theorem:\n{theorem['statement']}\n\n"
@@ -361,13 +409,13 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
         
         return False
 
-def process_theorem_task(theorem: dict, max_steps: int, planning_interval: int, enc: Optional[tiktoken.Encoding]) -> tuple[Union[bool, str], int, str]:
+def process_theorem_task(theorem: dict, max_steps: int, planning_interval: int, model_id: str, enc: Optional[tiktoken.Encoding]) -> tuple[Union[bool, str], int, str]:
     """
     A wrapper function to process a single theorem in a separate thread.
     Creates its own agent to ensure thread safety.
     """
     # Each thread gets its own agent to avoid state conflicts.
-    agent = create_math_prover_agent(max_steps=max_steps, planning_interval=planning_interval)
+    agent = create_math_prover_agent(max_steps=max_steps, planning_interval=planning_interval, model_id=model_id)
     
     # Each thread manages its own token count.
     thread_token_counter = {'total': 0}
@@ -402,6 +450,8 @@ def main():
                         help=f"Interval for agent planning steps (default: {DEFAULT_PLANNING_INTERVAL}). Lower = more frequent planning.")
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"Number of theorems to process in parallel (default: {DEFAULT_CONCURRENCY}).")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
+                        help=f"Model to use for theorem proving (default: {DEFAULT_MODEL}). Available models: {', '.join(AVAILABLE_MODELS)}")
     
     # Checkpoint arguments
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -413,6 +463,11 @@ def main():
     parser.add_argument("--list_checkpoints", action="store_true",
                         help="List all available checkpoints and exit.")
     args = parser.parse_args()
+
+    # Validate model selection
+    if args.model not in AVAILABLE_MODELS:
+        logger.error(f"Invalid model '{args.model}'. Available models: {', '.join(AVAILABLE_MODELS)}")
+        return
 
     # --- tiktoken setup ---
     try:
@@ -428,6 +483,7 @@ def main():
     PLANNING_INTERVAL = args.planning_interval
     CHECKPOINT_INTERVAL = args.checkpoint_interval
     CONCURRENCY = args.concurrency
+    SELECTED_MODEL = args.model
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
@@ -443,7 +499,7 @@ def main():
         return
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
     if args.checkpoint:
         logger.info(f"Resuming from checkpoint: {args.checkpoint}")
     if args.save_checkpoint:
@@ -495,7 +551,7 @@ def main():
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
         future_to_theorem_name = {
-            executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, enc): theorem['name']
+            executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, SELECTED_MODEL, enc): theorem['name']
             for theorem in micro_subset[start_index:]
         }
         
@@ -524,7 +580,7 @@ def main():
             
             # Save checkpoint periodically
             if args.save_checkpoint and (processed_count - start_index) > 0 and (processed_count - start_index) % CHECKPOINT_INTERVAL == 0:
-                save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint)
+                save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint, SELECTED_MODEL)
 
     logger.info("\n--- Summary of Results ---")
     solved_count = sum(1 for success in results.values() if success)
@@ -551,7 +607,7 @@ def main():
     
     # Save final checkpoint if requested
     if args.save_checkpoint:
-        save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint)
+        save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint, SELECTED_MODEL)
     
     # --- Handle insufficient credits error ---
     if insufficient_credits:

@@ -10,7 +10,7 @@ from typing import Optional
 
 # --- Project Paths ---
 BASE_DIR = Path(__file__).parent
-MINIF2F_DIR = BASE_DIR / "miniF2F"
+MINIF2F_DIR = BASE_DIR / "lean-dojo-mew"
 LOG_DIR = BASE_DIR / "log"
 TMP_DIR = BASE_DIR / "tmp"
 
@@ -27,7 +27,8 @@ AVAILABLE_MODELS = [
 ]
 
 # --- Lean Configuration ---
-LEAN_SOURCE_FILE = MINIF2F_DIR / "lean" / "src" / "valid.lean"
+# In Lean 4 project, validation statements reside in `MiniF2F/Validation.lean`
+LEAN_SOURCE_FILE = MINIF2F_DIR / "MiniF2F" / "Validation.lean"
 LEAN_OUTPUT_FILE = BASE_DIR / "valid.json"
 LEAN_TIMEOUT = 120  # seconds for Lean compilation (increased from 30)
 

@@ -66,21 +66,29 @@ def process_lean_theorems(lean_content: str) -> list[dict]:
         full_statement = match.group('full_statement').strip()
         name = match.group('name')
 
-        # After finding a declaration, we check if it has a proof.
-        # A proof is typically enclosed in a `begin...end` block.
-        begin_end_pattern = re.compile(r'begin\s*(.*?)\s*end', re.DOTALL)
-        begin_end_match = begin_end_pattern.search(full_statement)
-        
+        # Detect proof styles:
+        #   1. Tactic blocks: `begin ... end`
+        #   2. Term-style proofs: `:= by <proof>`
+
         is_solved = False
-        if begin_end_match:
-            proof_content = begin_end_match.group(1).strip()
-            # A proof is considered "solved" if the block is not empty
-            # and does not contain `sorry`.
+
+        # Pattern for `begin ... end`
+        begin_end_pattern = re.compile(r'begin\s*(.*?)\s*end', re.DOTALL)
+        # Pattern for `by ...` (captures everything after `:= by` until EOL)
+        by_pattern = re.compile(r':=\s*by\s+(.*)', re.DOTALL)
+
+        if begin_end_pattern.search(full_statement):
+            proof_content = begin_end_pattern.search(full_statement).group(1).strip()
             if proof_content and 'sorry' not in proof_content:
                 is_solved = True
-                # To create a consistent problem format, we replace the
-                # existing proof with a `sorry` block.
-                full_statement = begin_end_pattern.sub('begin\n  sorry\nend', full_statement)
+            # Replace any existing proof with placeholder
+            full_statement = begin_end_pattern.sub('begin\n  sorry\nend', full_statement)
+        elif by_pattern.search(full_statement):
+            proof_content = by_pattern.search(full_statement).group(1).strip()
+            if proof_content and 'sorry' not in proof_content:
+                is_solved = True
+            # Replace proof with Lean 4 placeholder `by sorry`
+            full_statement = by_pattern.sub(':= by sorry', full_statement)
 
         theorems.append({
             'name': name,

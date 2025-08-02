@@ -6,7 +6,7 @@ import argparse
 # --- Configuration ---
 # Set the default path to the log file.
 # This can be overridden with a command-line argument.
-DEFAULT_LOG_FILE = Path(__file__).parent / "logs" / "llm_requests.log"
+DEFAULT_LOG_FILE = Path(__file__).parent / "log" / "llm_requests.log"
 
 def parse_log_file(log_path: Path) -> dict:
     """
