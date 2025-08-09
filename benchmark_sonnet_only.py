@@ -36,6 +36,7 @@ from config import (
     DEFAULT_LOG_LEVEL,
     DEFAULT_JSON_FILE,
     LOG_FORMAT,
+    LLM_REQUEST_TIMEOUT,
     validate_config
 )
 
@@ -289,6 +290,7 @@ def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name:
             model=model_name,
             messages=messages,
             extra_body={"max_completion_tokens": max_tokens},
+            timeout=LLM_REQUEST_TIMEOUT,
         )
     # Default: OpenRouter
     return client.chat.completions.create(
@@ -297,6 +299,7 @@ def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name:
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature,
+        timeout=LLM_REQUEST_TIMEOUT,
     )
 
 def generate_and_verify_proof(theorem: dict) -> bool:
@@ -363,7 +366,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
                 "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
                 "X-Title": "Math Agent Vikhr",
             },
-            max_tokens=16000,
+            max_tokens=4096,
             temperature=0.1,
         )
 
@@ -470,7 +473,9 @@ def main():
     global current_provider
     current_provider = provider
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
+    # Limit to one worker for OpenAI to simplify rate-limits/hangs; keep concurrency for OpenRouter
+    max_workers = 1 if provider == "openai" else CONCURRENCY
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_theorem = {
             executor.submit(process_theorem_task, theorem): theorem['name']
             for theorem in micro_subset

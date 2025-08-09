@@ -41,6 +41,10 @@ LEAN_SOURCE_FILE = MINIF2F_DIR / "MiniF2F" / "Valid.lean"
 LEAN_OUTPUT_FILE = BASE_DIR / "valid.json"
 LEAN_TIMEOUT = 900  # seconds for Lean compilation (increased from 30)
 
+# --- LLM/API timeouts ---
+# Default HTTP request timeout for LLM API calls (seconds)
+LLM_REQUEST_TIMEOUT = int(os.environ.get("LLM_REQUEST_TIMEOUT", "120"))
+
 # --- Agent Configuration ---
 DEFAULT_SUBSET_SIZE = 10
 DEFAULT_LOG_LEVEL = "INFO"
@@ -111,6 +115,7 @@ __all__ = [
     "LEAN_SOURCE_FILE",
     "LEAN_OUTPUT_FILE",
     "LEAN_TIMEOUT",
+    "LLM_REQUEST_TIMEOUT",
     "DEFAULT_SUBSET_SIZE",
     "DEFAULT_LOG_LEVEL",
     "DEFAULT_JSON_FILE",
