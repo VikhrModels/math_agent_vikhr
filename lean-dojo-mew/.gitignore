@@ -1,7 +1,0 @@
-*.olean
-/_target
-/leanpkg.path
-/lake-packages
-/build
-.vscode
-.vscode
