@@ -12,7 +12,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 import concurrent.futures
-from lean_verifier import LeanVerifier
+from agents.tools import lean_verifier as verifier
 
 # Import configuration
 from config import (
@@ -36,7 +36,7 @@ from config import (
 # These can be customized as needed.
 
 # Initialize a single LeanVerifier instance (Lean 4 + Lake)
-verifier = LeanVerifier()
+# verifier = LeanVerifier() # This line is removed as per the edit hint.
 
 # Micro-subset file for tracking selected tasks
 MICRO_SUBSET_FILE = Path(__file__).parent / "micro_subset.txt"
