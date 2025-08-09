@@ -318,7 +318,6 @@ def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name:
             extra_body={
                 "max_completion_tokens": max_tokens,
                 "response_format": {"type": "text"},
-                "tool_choice": "none",
             },
             timeout=LLM_REQUEST_TIMEOUT,
         )
