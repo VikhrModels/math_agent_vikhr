@@ -16,6 +16,7 @@ from agents.tools import lean_verifier as verifier
 
 # Global LLM client reference (initialized in main)
 client: Optional[OpenAI] = None
+current_provider: Optional[str] = None
 
 # Import configuration
 from config import (
@@ -279,6 +280,16 @@ def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name:
     A wrapper for the OpenAI API call that includes automatic retries with exponential backoff.
     This makes the script more resilient to transient network issues or API rate limits.
     """
+    # Use provider-specific token parameter to avoid 400 errors on OpenAI (gpt-5, etc.)
+    if current_provider == "openai":
+        return client.chat.completions.create(
+            extra_headers=extra_headers,
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            extra_body={"max_completion_tokens": max_tokens},
+        )
+    # Default: OpenRouter
     return client.chat.completions.create(
         extra_headers=extra_headers,
         model=model_name,
@@ -455,6 +466,8 @@ def main():
     logger.info("\n--- Running LLM and Lean Verification on Micro-Subset (multithreaded) ---")
     global client
     client = make_client(provider)
+    global current_provider
+    current_provider = provider
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
         future_to_theorem = {
