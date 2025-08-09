@@ -18,6 +18,32 @@ from agents.tools import lean_verifier as verifier
 client: Optional[OpenAI] = None
 current_provider: Optional[str] = None
 
+# --- Helpers ---------------------------------------------------------------
+def _message_text(message) -> str:
+    """Extract text content from OpenAI ChatCompletionMessage.
+
+    Handles both string content and list-of-parts responses.
+    """
+    if message is None:
+        return ""
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content.strip()
+    # Some SDK versions return a list of content parts
+    parts_text: list[str] = []
+    if isinstance(content, list):
+        for part in content:
+            # dict-like {"type": "text", "text": "..."}
+            if isinstance(part, dict):
+                if part.get("type") == "text" and isinstance(part.get("text"), str):
+                    parts_text.append(part["text"]) 
+            else:
+                # object with .type/.text attributes
+                text_val = getattr(part, "text", None)
+                if isinstance(text_val, str):
+                    parts_text.append(text_val)
+    return "\n".join(parts_text).strip()
+
 # Import configuration
 from config import (
     OPENROUTER_API_KEY,
@@ -375,13 +401,12 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             logger.error(f"  ❌ No response received from LLM for {theorem['name']}")
             return False
         
-        # Check if message and content exist
+        # Check if message and content exist (handle both string and content parts)
         message = completion.choices[0].message
-        if not message or not message.content:
+        generated_content = _message_text(message)
+        if not generated_content:
             logger.error(f"  ❌ Empty response content from LLM for {theorem['name']}")
             return False
-        
-        generated_content = message.content
         finish_reason = completion.choices[0].finish_reason
         logger.info(f"LLM response for {theorem['name']} finished with reason: {finish_reason}.")
         
