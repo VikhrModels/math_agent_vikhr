@@ -30,7 +30,7 @@ AVAILABLE_MODELS = [
 # In Lean 4 project, validation statements reside in `MiniF2F/Validation.lean`
 LEAN_SOURCE_FILE = MINIF2F_DIR / "MiniF2F" / "Validation.lean"
 LEAN_OUTPUT_FILE = BASE_DIR / "valid.json"
-LEAN_TIMEOUT = 120  # seconds for Lean compilation (increased from 30)
+LEAN_TIMEOUT = 900  # seconds for Lean compilation (increased from 30)
 
 # --- Agent Configuration ---
 DEFAULT_SUBSET_SIZE = 10

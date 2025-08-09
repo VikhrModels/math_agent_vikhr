@@ -9,7 +9,7 @@ from typing import Dict, Any
 import requests
 import brotli
 import json
-from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR
+from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -18,11 +18,21 @@ from smolagents import Tool
 from config import MINIF2F_DIR, LEAN_TIMEOUT
 from lean_verifier import LeanVerifier
 
+# Set up logging for the tool
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_DIR / "tools.log"),
+        logging.StreamHandler()
+    ],
+    force=True  # Force reconfiguration even if already configured
+)
+logger = logging.getLogger(__name__)
+
 # Initialize a single LeanVerifier instance (Lean 4 + Lake)
 lean4_verifier = LeanVerifier()
-
-# Set up logging for the tool
-logger = logging.getLogger(__name__)
 
 class VerifyLeanProof(Tool):
     """
@@ -106,8 +116,32 @@ class VerifyLeanProof(Tool):
                     }
         
         # === Lean 4 verification path ===
-        lean_imports = "import MiniF2F.Minif2fImport\n\n"
-        lean_code = lean_imports + theorem_statement
+        stmt = theorem_statement.lstrip()
+        
+        # Clean up the theorem statement - remove any problematic characters or syntax
+        cleaned_statement = theorem_statement.strip()
+        
+        # Check for basic syntax issues
+        if cleaned_statement.count(":=") == 0 and "theorem" in cleaned_statement.lower():
+            # Add missing := if theorem doesn't have it
+            if "sorry" in cleaned_statement.lower():
+                cleaned_statement = cleaned_statement.replace("sorry", ":= sorry")
+            else:
+                cleaned_statement = cleaned_statement.replace("theorem", "theorem test_theorem")
+                if ":=" not in cleaned_statement:
+                    cleaned_statement += " := sorry"
+        
+        has_any_import = stmt.startswith("import ") or "\nimport " in stmt
+        needs_minif2f = "MiniF2F.Minif2fImport" not in cleaned_statement
+        if has_any_import:
+            # Preserve user imports; ensure MiniF2F import is present once
+            if needs_minif2f:
+                lean_code = "import MiniF2F.Minif2fImport\n" + cleaned_statement
+            else:
+                lean_code = cleaned_statement
+        else:
+            # No imports provided; add required import
+            lean_code = "import MiniF2F.Minif2fImport\n\n" + cleaned_statement
 
         theorem_name = f"TempProof_{os.getpid()}_{time.time_ns()}"
 

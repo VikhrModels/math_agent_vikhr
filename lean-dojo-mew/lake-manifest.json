@@ -23,7 +23,7 @@
     "rev": "093597d495484f95afebb9f7898a8769d3b06f59",
     "opts": {},
     "name": "mathlib",
-    "inputRev?": null,
+    "inputRev?": "093597d495484f95afebb9f7898a8769d3b06f59",
     "inherited": false}},
   {"git":
    {"url": "https://github.com/gebner/quote4",

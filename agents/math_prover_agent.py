@@ -30,7 +30,8 @@ logging.basicConfig(
     handlers=[
         logging.FileHandler(LOG_DIR / "agent_benchmark.log"),
         logging.StreamHandler()
-    ]
+    ],
+    force=True  # Force reconfiguration even if already configured
 )
 logger = logging.getLogger(__name__)
 
@@ -380,9 +381,9 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
                 logger.debug(f"Agent result:\n{result}")
                 return False
                 
-        if isinstance(result, str) and 'theorem' in result and 'begin' in result and 'end' in result:
+        if isinstance(result, str) and 'theorem' in result:
             # Log the Lean code solution
-            logger.info(f"Lean code solution for {theorem['name']}:\n{result}")
+            logger.info(f"Lean code candidate for {theorem['name']}:\n{result}")
             verification = verify_lean_proof(result)
             if isinstance(verification, dict) and verification.get('success') is True:
                 logger.info(f"✅ Agent successfully generated proof for {theorem['name']} (after verification)")
@@ -392,7 +393,7 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
                 logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (verification failed)")
                 logger.debug(f"Verification result:\n{verification}")
                 return False
-                
+        
         logger.warning(f"❌ Agent failed to generate valid proof for {theorem['name']} (no valid result)")
         logger.debug(f"Agent result:\n{result}")
         return False
