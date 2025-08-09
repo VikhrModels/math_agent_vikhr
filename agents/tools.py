@@ -10,13 +10,14 @@ import requests
 import brotli
 import json
 from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
+import tempfile
+import shutil
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import Tool
 from config import MINIF2F_DIR, LEAN_TIMEOUT
-from lean_verifier import LeanVerifier
 
 # Set up logging for the tool
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,8 +32,138 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize a single LeanVerifier instance (Lean 4 + Lake)
-lean4_verifier = LeanVerifier()
+# ---------------------------------------------------------------------------
+# LeanVerifier helper (adapted from verify_task.py)
+# ---------------------------------------------------------------------------
+
+class LeanVerifier:
+    """Light-weight wrapper around the Lean 4 compiler (via Lake) that verifies on-the-fly code snippets.
+
+    The verifier writes the provided Lean code to a temporary file inside the
+    `miniF2F-lean4` project, calls `lake env lean` on that file, captures the
+    compiler output, and returns a structured result the agent can consume.
+
+    Parameters
+    ----------
+    lake_binary : str | None, optional
+        Path to the `lake` executable.  If *None*, we attempt to locate it via
+        the `LAKE_BINARY` environment variable and finally fall back to
+        ``shutil.which('lake')``.
+    project_root : pathlib.Path | None, optional
+        Absolute path to the Lake project root that contains either
+        `lakefile.lean` *or* `lake-manifest.json`.  Defaults to
+        ``<repo-root>/miniF2F-lean4``.
+    timeout : int, optional
+        Seconds to wait for Lean to finish before aborting the process.
+    """
+
+    def __init__(self,
+                 lake_binary: str | None = None,
+                 project_root: Path | None = None,
+                 timeout: int = LEAN_TIMEOUT) -> None:
+        self.timeout = timeout
+
+        # --- Determine Lake binary ------------------------------------------------
+        env_binary = os.getenv("LAKE_BINARY")
+        self.lake_binary = lake_binary or env_binary or shutil.which("lake")
+        if not self.lake_binary or not Path(self.lake_binary).exists():
+            # Fall-back to common elan path if not found
+            default_path = Path.home() / ".elan" / "bin" / "lake"
+            if default_path.exists():
+                self.lake_binary = str(default_path)
+            else:
+                raise FileNotFoundError(
+                    "Could not locate `lake` executable. Set LAKE_BINARY env or install Lean tooling.")
+
+        # --- Determine project root ----------------------------------------------
+        repo_root = Path(__file__).resolve().parent.parent
+        default_root = repo_root / "miniF2F-lean4"
+        self.project_root = Path(project_root) if project_root else default_root
+
+        if not ((self.project_root / "lakefile.lean").exists() or (self.project_root / "lake-manifest.json").exists()):
+            raise FileNotFoundError(
+                f"Expected Lake project root at {self.project_root} (no lakefile.lean or lake-manifest.json found)" )
+
+    # -----------------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------------
+
+    def verify_lean_code(self, lean_code: str, label: str | None = None) -> Dict[str, Any]:
+        """Compile *lean_code* inside the project and return a structured result.
+
+        Parameters
+        ----------
+        lean_code : str
+            Complete Lean code (will be prepended with the required import if
+            missing).
+        label : str | None
+            Optional label used only for logging; ignored otherwise.
+        """
+        label_str = label or "anonymous"
+        logger.info(f"[LeanVerifier] Verifying Lean snippet '{label_str}' (length={len(lean_code)} chars)")
+
+        # Ensure required import is present
+        if "MiniF2F.Minif2fImport" not in lean_code:
+            lean_code = "import MiniF2F.Minif2fImport\n\n" + lean_code.lstrip()
+
+        # Write to temporary file in project root
+        tmp_file = tempfile.NamedTemporaryFile("w", suffix=".lean", dir=self.project_root, delete=False, encoding="utf-8")
+        try:
+            tmp_file.write(lean_code)
+            tmp_file.flush()
+            tmp_path = Path(tmp_file.name)
+        finally:
+            tmp_file.close()
+
+        # Call Lean compiler via Lake
+        cmd = [self.lake_binary, "env", "lean", str(tmp_path)]
+        logger.info(f"[LeanVerifier] Running command: {' '.join(cmd)}  (cwd={self.project_root})")
+        try:
+            proc = subprocess.run(cmd, cwd=self.project_root, capture_output=True, text=True, timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            logger.error("[LeanVerifier] Lean compilation timed-out")
+            tmp_path.unlink(missing_ok=True)
+            return {"success": False, "output": "Lean compilation timed-out", "exit_code": -1}
+
+        stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
+        output_combined = (stdout or "") + (stderr or "")
+
+        # Clean compiler paths to reduce noise
+        clean_output = self._clean_output(output_combined, str(tmp_path))
+
+        # Remove temporary file
+        tmp_path.unlink(missing_ok=True)
+
+        success = exit_code == 0
+        logger.info(f"[LeanVerifier] Compilation finished – success={success}, exit_code={exit_code}")
+
+        return {
+            "success": success,
+            "exit_code": exit_code,
+            "output": clean_output,
+        }
+
+    # -----------------------------------------------------------------------
+    # Internals
+    # -----------------------------------------------------------------------
+
+    @staticmethod
+    def _clean_output(raw: str, tmp_path: str) -> str:
+        """Strip occurrences of *tmp_path* from Lean diagnostics for readability."""
+        cleaned_lines: list[str] = []
+        for line in raw.splitlines():
+            if tmp_path in line:
+                # Keep only the part after the filename so we still have line/col info
+                parts = line.split(tmp_path)
+                cleaned_lines.append(parts[1].lstrip(":") if len(parts) > 1 else line)
+            else:
+                cleaned_lines.append(line)
+        return "\n".join(cleaned_lines)
+
+# ---------------------------------------------------------------------------
+# Instantiate global Lean verifier (single process reuse)
+# ---------------------------------------------------------------------------
+lean_verifier = LeanVerifier()
 
 class VerifyLeanProof(Tool):
     """
@@ -43,10 +174,10 @@ class VerifyLeanProof(Tool):
     
     name = "verify_lean_proof"
     description = """
-    Verifies a Lean 3.42.1 mathematical proof by compiling it within the miniF2F project environment.
+    Verifies a Lean 4 mathematical proof by compiling it within the miniF2F project environment.
     
     This tool creates a temporary Lean file with the provided theorem and attempts to compile it
-    using the Lean 3.42.1 compiler. It ensures all necessary dependencies are available by working
+    using the Lean 4 compiler. It ensures all necessary dependencies are available by working
     within the miniF2F project structure.
     
     The theorem should be a complete Lean statement that may contain a `sorry` placeholder.
@@ -146,7 +277,7 @@ class VerifyLeanProof(Tool):
         theorem_name = f"TempProof_{os.getpid()}_{time.time_ns()}"
 
         try:
-            result = lean4_verifier.verify_lean_code(lean_code, theorem_name)
+            result = lean_verifier.verify_lean_code(lean_code, theorem_name)
             return result
         except Exception as e:
             logger.error(f"Unexpected error during Lean 4 verification: {e}")
