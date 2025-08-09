@@ -13,12 +13,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import CodeAgent, OpenAIServerModel
 from config import (
-    DEFAULT_MODEL, AVAILABLE_MODELS, OPENROUTER_API_BASE, OPENROUTER_API_KEY, 
+    DEFAULT_MODEL, AVAILABLE_MODELS,
+    OPENROUTER_API_BASE, OPENROUTER_API_KEY,
+    OPENAI_API_BASE, OPENAI_API_KEY,
+    DEFAULT_PROVIDER, AVAILABLE_PROVIDERS,
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
-    DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL, 
+    DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
     DEFAULT_CONCURRENCY,
-    validate_config
+    validate_config, validate_provider_credentials,
 )
 from agents.tools import verify_lean_proof, moogle_semantic_search
 
@@ -138,7 +141,10 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     logger.info(f"Selected {len(micro_subset)} theorems for testing")
     return micro_subset
 
-def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interval: int = DEFAULT_PLANNING_INTERVAL, model_id: str = DEFAULT_MODEL):
+def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
+                             planning_interval: int = DEFAULT_PLANNING_INTERVAL,
+                             model_id: str = DEFAULT_MODEL,
+                             provider: str = DEFAULT_PROVIDER):
     """
     Create a multi-agent system for theorem proving:
     - Idea generator agent: receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent.
@@ -151,10 +157,21 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS, planning_interv
         logger.critical(f"Configuration error: {e}")
         sys.exit(1)
 
+    # Validate credentials for selected provider and build model client
+    validate_provider_credentials(provider)
+    if provider == "openrouter":
+        api_base = OPENROUTER_API_BASE
+        api_key = OPENROUTER_API_KEY
+    elif provider == "openai":
+        api_base = OPENAI_API_BASE
+        api_key = OPENAI_API_KEY
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+
     model = OpenAIServerModel(
         model_id=model_id,
-        api_base=OPENROUTER_API_BASE,
-        api_key=OPENROUTER_API_KEY,
+        api_base=api_base,
+        api_key=api_key,
     )
 
     # Code generator agent (uses only the Lean proof verifier)
@@ -410,13 +427,21 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
         
         return False
 
-def process_theorem_task(theorem: dict, max_steps: int, planning_interval: int, model_id: str, enc: Optional[tiktoken.Encoding]) -> tuple[Union[bool, str], int, str]:
+def process_theorem_task(theorem: dict,
+                         max_steps: int,
+                         planning_interval: int,
+                         model_id: str,
+                         provider: str,
+                         enc: Optional[tiktoken.Encoding]) -> tuple[Union[bool, str], int, str]:
     """
     A wrapper function to process a single theorem in a separate thread.
     Creates its own agent to ensure thread safety.
     """
     # Each thread gets its own agent to avoid state conflicts.
-    agent = create_math_prover_agent(max_steps=max_steps, planning_interval=planning_interval, model_id=model_id)
+    agent = create_math_prover_agent(max_steps=max_steps,
+                                     planning_interval=planning_interval,
+                                     model_id=model_id,
+                                     provider=provider)
     
     # Each thread manages its own token count.
     thread_token_counter = {'total': 0}
@@ -452,7 +477,10 @@ def main():
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"Number of theorems to process in parallel (default: {DEFAULT_CONCURRENCY}).")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
-                        help=f"Model to use for theorem proving (default: {DEFAULT_MODEL}). Available models: {', '.join(AVAILABLE_MODELS)}")
+                        help=f"Model to use (default: {DEFAULT_MODEL}). Available: {', '.join(AVAILABLE_MODELS)}")
+    parser.add_argument("--provider", type=str, default=DEFAULT_PROVIDER,
+                        choices=AVAILABLE_PROVIDERS,
+                        help=f"LLM provider to use (default: {DEFAULT_PROVIDER}). Choices: {', '.join(AVAILABLE_PROVIDERS)}")
     
     # Checkpoint arguments
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -485,6 +513,7 @@ def main():
     CHECKPOINT_INTERVAL = args.checkpoint_interval
     CONCURRENCY = args.concurrency
     SELECTED_MODEL = args.model
+    SELECTED_PROVIDER = args.provider
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
@@ -500,7 +529,7 @@ def main():
         return
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Provider='{SELECTED_PROVIDER}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
     if args.checkpoint:
         logger.info(f"Resuming from checkpoint: {args.checkpoint}")
     if args.save_checkpoint:
@@ -552,7 +581,7 @@ def main():
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
         future_to_theorem_name = {
-            executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, SELECTED_MODEL, enc): theorem['name']
+            executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, SELECTED_MODEL, SELECTED_PROVIDER, enc): theorem['name']
             for theorem in micro_subset[start_index:]
         }
         

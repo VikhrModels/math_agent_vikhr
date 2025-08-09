@@ -15,8 +15,17 @@ LOG_DIR = BASE_DIR / "log"
 TMP_DIR = BASE_DIR / "tmp"
 
 # --- API Configuration ---
+# OpenRouter (proxy for many providers)
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
+
+# OpenAI (direct provider)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+OPENAI_API_BASE = "https://api.openai.com/v1"
+
+# Default provider selection
+DEFAULT_PROVIDER = os.environ.get("MATH_AGENT_PROVIDER", "openrouter")  # one of: ["openrouter", "openai"]
+AVAILABLE_PROVIDERS = ["openrouter", "openai"]
 
 # --- Model Configuration ---
 DEFAULT_MODEL = "anthropic/claude-sonnet-4"
@@ -52,18 +61,26 @@ LOG_FORMAT = '%(asctime)s - %(levelname)s - %(message)s'
 
 # --- Validation ---
 def validate_config() -> None:
-    """Validate that all required configuration is present."""
-    if not OPENROUTER_API_KEY:
-        raise ValueError(
-            "OPENROUTER_API_KEY environment variable is not set. "
-            "Please set it before running the application."
-        )
-    
+    """Validate static configuration that is provider-agnostic.
+
+    API credentials are validated at runtime based on the selected provider.
+    """
     if not LEAN_SOURCE_FILE.exists():
         raise FileNotFoundError(
             f"Lean source file not found at {LEAN_SOURCE_FILE}. "
-            "Make sure miniF2F submodule is properly initialized."
+            "Make sure miniF2F-lean4 project is present."
         )
+
+def validate_provider_credentials(provider: str) -> None:
+    """Validate API credentials for a given provider."""
+    if provider == "openrouter":
+        if not OPENROUTER_API_KEY:
+            raise ValueError("OPENROUTER_API_KEY is not set")
+    elif provider == "openai":
+        if not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is not set")
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
 
 # --- Environment-specific overrides ---
 def get_model_for_environment() -> str:
@@ -83,8 +100,12 @@ __all__ = [
     "MINIF2F_DIR", 
     "LOG_DIR",
     "TMP_DIR",
+    "OPENAI_API_KEY",
+    "OPENAI_API_BASE",
     "OPENROUTER_API_KEY",
     "OPENROUTER_API_BASE",
+    "DEFAULT_PROVIDER",
+    "AVAILABLE_PROVIDERS",
     "DEFAULT_MODEL",
     "AVAILABLE_MODELS",
     "LEAN_SOURCE_FILE",
@@ -99,6 +120,7 @@ __all__ = [
     "LOG_FILE",
     "LOG_FORMAT",
     "validate_config",
+    "validate_provider_credentials",
     "get_model_for_environment",
     "get_subset_size_for_environment",
 ] 

@@ -14,10 +14,17 @@ from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_l
 import concurrent.futures
 from agents.tools import lean_verifier as verifier
 
+# Global LLM client reference (initialized in main)
+client: Optional[OpenAI] = None
+
 # Import configuration
 from config import (
     OPENROUTER_API_KEY,
     OPENROUTER_API_BASE,
+    OPENAI_API_KEY,
+    OPENAI_API_BASE,
+    DEFAULT_PROVIDER,
+    AVAILABLE_PROVIDERS,
     DEFAULT_MODEL,
     MINIF2F_DIR,
     LOG_DIR,
@@ -55,18 +62,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- OpenRouter client initialization ---
-# Sets up the API client for communication with the OpenRouter service.
-# Exits gracefully if the required API key is not found.
-try:
+# --- LLM client factory ---
+def make_client(provider: str) -> OpenAI:
+    """Create an OpenAI-compatible client for the selected provider."""
     validate_config()
-    client = OpenAI(
-        base_url=OPENROUTER_API_BASE,
-        api_key=OPENROUTER_API_KEY,
-    )
-except (ValueError, FileNotFoundError) as e:
-    logger.critical(e)
-    exit(1) # Exit if configuration is invalid
+    if provider == "openrouter":
+        if not OPENROUTER_API_KEY:
+            raise ValueError("OPENROUTER_API_KEY is not set")
+        return OpenAI(base_url=OPENROUTER_API_BASE, api_key=OPENROUTER_API_KEY)
+    if provider == "openai":
+        if not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is not set")
+        return OpenAI(base_url=OPENAI_API_BASE, api_key=OPENAI_API_KEY)
+    raise ValueError(f"Unsupported provider: {provider}")
 
 # --- Helper functions ---
 # This section contains reusable functions that encapsulate specific logic,
@@ -399,7 +407,10 @@ def main():
     parser.add_argument("--json_file", type=Path, default=LEAN_OUTPUT_FILE,
                         help="Path to the JSON file containing theorems.")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
-                        help="OpenRouter model name to use for proof generation.")
+                        help="Model name to use for proof generation.")
+    parser.add_argument("--provider", type=str, default=DEFAULT_PROVIDER,
+                        choices=AVAILABLE_PROVIDERS,
+                        help=f"LLM provider (default: {DEFAULT_PROVIDER}). Choices: {', '.join(AVAILABLE_PROVIDERS)}")
     parser.add_argument("--log_level", type=str, default=DEFAULT_LOG_LEVEL,
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level (e.g., DEBUG for verbose output).")
@@ -410,12 +421,13 @@ def main():
     MICRO_SUBSET_SIZE = args.subset_size
     VALID_JSON_PATH = args.json_file
     DEFAULT_MODEL = args.model
+    provider = args.provider
     CONCURRENCY = args.concurrency
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
-    logger.info("Starting MiniF2F Lean Prover Benchmark with Claude Sonnet via OpenRouter...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Concurrency={CONCURRENCY}")
+    logger.info("Starting MiniF2F Lean Prover Benchmark...")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Provider='{provider}', Model='{DEFAULT_MODEL}', Log Level='{args.log_level}', Concurrency={CONCURRENCY}")
     
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -441,6 +453,8 @@ def main():
         return
 
     logger.info("\n--- Running LLM and Lean Verification on Micro-Subset (multithreaded) ---")
+    global client
+    client = make_client(provider)
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
         future_to_theorem = {
