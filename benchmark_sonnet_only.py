@@ -282,11 +282,12 @@ def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name:
     """
     # Use provider-specific token parameter to avoid 400 errors on OpenAI (gpt-5, etc.)
     if current_provider == "openai":
+        # For OpenAI (e.g., gpt-5), do not send temperature (only default=1 supported)
+        # and use max_completion_tokens instead of max_tokens
         return client.chat.completions.create(
             extra_headers=extra_headers,
             model=model_name,
             messages=messages,
-            temperature=temperature,
             extra_body={"max_completion_tokens": max_tokens},
         )
     # Default: OpenRouter
