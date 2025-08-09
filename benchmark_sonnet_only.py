@@ -309,13 +309,17 @@ def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name:
     """
     # Use provider-specific token parameter to avoid 400 errors on OpenAI (gpt-5, etc.)
     if current_provider == "openai":
-        # For OpenAI (e.g., gpt-5), do not send temperature (only default=1 supported)
-        # and use max_completion_tokens instead of max_tokens
+        # For OpenAI (e.g., gpt-5), force plain text output and disable tool calls.
+        # Also omit temperature (only default supported) and use max_completion_tokens.
         return client.chat.completions.create(
             extra_headers=extra_headers,
             model=model_name,
             messages=messages,
-            extra_body={"max_completion_tokens": max_tokens},
+            extra_body={
+                "max_completion_tokens": max_tokens,
+                "response_format": {"type": "text"},
+                "tool_choice": "none",
+            },
             timeout=LLM_REQUEST_TIMEOUT,
         )
     # Default: OpenRouter
@@ -406,6 +410,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
         generated_content = _message_text(message)
         if not generated_content:
             logger.error(f"  ❌ Empty response content from LLM for {theorem['name']}")
+            logger.debug(f"  Raw message object: {message}")
             return False
         finish_reason = completion.choices[0].finish_reason
         logger.info(f"LLM response for {theorem['name']} finished with reason: {finish_reason}.")
