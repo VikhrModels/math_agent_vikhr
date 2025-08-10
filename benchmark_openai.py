@@ -9,29 +9,27 @@ from typing import List, Optional
 import concurrent.futures
 
 from openai import OpenAI
-from openai.types.chat import ChatCompletionMessageParam
 from tenacity import retry, wait_exponential, stop_after_attempt, before_sleep_log
 
 from agents.tools import lean_verifier as verifier
 
 # --- Helpers ---------------------------------------------------------------
-def _message_text(message) -> str:
-    if message is None:
-        return ""
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content.strip()
-    parts: list[str] = []
-    if isinstance(content, list):
-        for part in content:
-            if isinstance(part, dict):
-                if part.get("type") == "text" and isinstance(part.get("text"), str):
-                    parts.append(part["text"])
-            else:
-                text_val = getattr(part, "text", None)
-                if isinstance(text_val, str):
-                    parts.append(text_val)
-    return "\n".join(parts).strip()
+def _extract_output_text(response) -> str:
+    text = getattr(response, "output_text", None)
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    outputs = getattr(response, "output", None)
+    chunks: list[str] = []
+    if isinstance(outputs, list):
+        for msg in outputs:
+            content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") in {"output_text", "text"}:
+                        txt = part.get("text")
+                        if isinstance(txt, str):
+                            chunks.append(txt)
+    return "\n".join(chunks).strip()
 
 # Import configuration
 from config import (
@@ -144,17 +142,13 @@ def extract_proof_body(llm_response_content: str) -> str | None:
 client: Optional[OpenAI] = None
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5), before_sleep=before_sleep_log(logger, logging.WARNING))
-def _call_llm_with_retry(messages: List[ChatCompletionMessageParam], model_name: str, extra_headers: dict, max_tokens: int):
-    # For OpenAI (e.g., gpt-5), use max_completion_tokens and force text response
-    return client.chat.completions.create(
+def _call_llm_with_retry(input_messages: list[dict], model_name: str, extra_headers: dict, max_tokens: int):
+    return client.responses.create(
         extra_headers=extra_headers,
         model=model_name,
-        messages=messages,
-        extra_body={
-            "max_completion_tokens": max_tokens,
-            "response_format": {"type": "text"},
-        },
+        input=input_messages,
         timeout=LLM_REQUEST_TIMEOUT,
+        extra_body={"max_output_tokens": max_tokens},
     )
 
 
@@ -176,13 +170,13 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             f"Replace `sorry` with a simple Lean 4 proof using only basic tactics (simp, norm_num, ring, linarith, tauto, exact, apply, rw, cases, induction). Return ONLY the proof code in ```lean``` block.\n\n"
             f"Now prove this theorem:\n\n```lean\n{theorem['statement']}\n```"
         )
-        messages: List[ChatCompletionMessageParam] = [
-            {"role": "system", "content": system_prompt},
+        input_messages: list[dict] = [
+            {"role": "developer", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        logger.info(f"Sending request to LLM for {theorem['name']}. Prompt (first 500 chars):\n{json.dumps(messages, indent=2)[:500]}...")
-        completion = _call_llm_with_retry(
-            messages=messages,
+        logger.info(f"Sending request to LLM for {theorem['name']}. Prompt (first 500 chars):\n{json.dumps(input_messages, indent=2)[:500]}...")
+        resp = _call_llm_with_retry(
+            input_messages=input_messages,
             model_name=DEFAULT_MODEL,
             extra_headers={
                 "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
@@ -190,16 +184,11 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             },
             max_tokens=4096,
         )
-        if not completion or not completion.choices:
-            logger.error(f"  ❌ No response received from LLM for {theorem['name']}")
-            return False
-        message = completion.choices[0].message
-        generated_content = _message_text(message)
+        generated_content = _extract_output_text(resp)
         if not generated_content:
             logger.error(f"  ❌ Empty response content from LLM for {theorem['name']}")
-            logger.debug(f"  Raw message object: {message}")
+            logger.debug(f"  Raw response object: {resp}")
             return False
-        logger.debug(f"Finish reason: {completion.choices[0].finish_reason}")
         logger.info(f"Received LLM response for {theorem['name']}. Content:\n{generated_content[:200]}...")
         proof_body = extract_proof_body(generated_content)
         if not proof_body:
@@ -228,7 +217,7 @@ def main():
     parser.add_argument("--log_level", type=str, default=DEFAULT_LOG_LEVEL,
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level.")
-    parser.add_argument("--concurrency", type=int, default=1,
+    parser.add_argument("--concurrency", type=int, default=4,
                         help="Number of theorems to process in parallel (default: 1 for OpenAI).")
     args = parser.parse_args()
 
