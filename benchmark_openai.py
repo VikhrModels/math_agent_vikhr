@@ -141,6 +141,8 @@ def extract_proof_body(llm_response_content: str) -> str | None:
 
 client: Optional[OpenAI] = None
 SELECTED_MODEL: str = DEFAULT_MODEL
+REASONING_EFFORT: str = "low"  # one of: low, medium, high
+MAX_OUTPUT_TOKENS: int = 4096
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5), before_sleep=before_sleep_log(logger, logging.WARNING))
 def _call_llm_with_retry(input_messages: list[dict], model_name: str, extra_headers: dict, max_tokens: int):
@@ -148,7 +150,7 @@ def _call_llm_with_retry(input_messages: list[dict], model_name: str, extra_head
         extra_headers=extra_headers,
         model=model_name,
         input=input_messages,
-        response_format={"type": "text"},
+        reasoning={"effort": REASONING_EFFORT},
         timeout=LLM_REQUEST_TIMEOUT,
         extra_body={"max_output_tokens": max_tokens},
     )
@@ -176,7 +178,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
             {"role": "developer", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        logger.info(f"Sending request to LLM for {theorem['name']}. Prompt (first 500 chars):\n{json.dumps(input_messages, indent=2)[:500]}...")
+        logger.info(f"Sending request to LLM for {theorem['name']}. Prompt (first 500 chars):\n{json.dumps(input_messages, ensure_ascii=False, indent=2)[:500]}...")
         resp = _call_llm_with_retry(
             input_messages=input_messages,
             model_name=SELECTED_MODEL,
@@ -184,7 +186,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
                 "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
                 "X-Title": "Math Agent Vikhr",
             },
-            max_tokens=4096,
+            max_tokens=MAX_OUTPUT_TOKENS,
         )
         generated_content = _extract_output_text(resp)
         if not generated_content:
@@ -221,6 +223,10 @@ def main():
                         help="Set the logging level.")
     parser.add_argument("--concurrency", type=int, default=4,
                         help="Number of theorems to process in parallel (default: 4 for OpenAI).")
+    parser.add_argument("--effort", type=str, choices=["low", "medium", "high"], default="low",
+                        help="Reasoning effort level for OpenAI Responses API (default: low).")
+    parser.add_argument("--max_output_tokens", type=int, default=4096,
+                        help="Max output tokens for the model response (default: 4096).")
     args = parser.parse_args()
 
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
@@ -245,6 +251,9 @@ def main():
     client = make_client()
     global SELECTED_MODEL
     SELECTED_MODEL = args.model
+    global REASONING_EFFORT, MAX_OUTPUT_TOKENS
+    REASONING_EFFORT = args.effort
+    MAX_OUTPUT_TOKENS = args.max_output_tokens
     results: dict[str, bool] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_theorem = {executor.submit(process_theorem_task, th): th['name'] for th in micro_subset}
