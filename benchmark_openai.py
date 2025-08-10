@@ -148,6 +148,7 @@ def _call_llm_with_retry(input_messages: list[dict], model_name: str, extra_head
         extra_headers=extra_headers,
         model=model_name,
         input=input_messages,
+        response_format={"type": "text"},
         timeout=LLM_REQUEST_TIMEOUT,
         extra_body={"max_output_tokens": max_tokens},
     )
