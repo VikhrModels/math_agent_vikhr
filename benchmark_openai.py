@@ -140,6 +140,7 @@ def extract_proof_body(llm_response_content: str) -> str | None:
 
 
 client: Optional[OpenAI] = None
+SELECTED_MODEL: str = DEFAULT_MODEL
 
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5), before_sleep=before_sleep_log(logger, logging.WARNING))
 def _call_llm_with_retry(input_messages: list[dict], model_name: str, extra_headers: dict, max_tokens: int):
@@ -177,7 +178,7 @@ def generate_and_verify_proof(theorem: dict) -> bool:
         logger.info(f"Sending request to LLM for {theorem['name']}. Prompt (first 500 chars):\n{json.dumps(input_messages, indent=2)[:500]}...")
         resp = _call_llm_with_retry(
             input_messages=input_messages,
-            model_name=DEFAULT_MODEL,
+            model_name=SELECTED_MODEL,
             extra_headers={
                 "HTTP-Referer": "https://github.com/umbra2728/math_agent_vikhr",
                 "X-Title": "Math Agent Vikhr",
@@ -218,7 +219,7 @@ def main():
                         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                         help="Set the logging level.")
     parser.add_argument("--concurrency", type=int, default=4,
-                        help="Number of theorems to process in parallel (default: 1 for OpenAI).")
+                        help="Number of theorems to process in parallel (default: 4 for OpenAI).")
     args = parser.parse_args()
 
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
@@ -241,6 +242,8 @@ def main():
 
     global client
     client = make_client()
+    global SELECTED_MODEL
+    SELECTED_MODEL = args.model
     results: dict[str, bool] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
         future_to_theorem = {executor.submit(process_theorem_task, th): th['name'] for th in micro_subset}
