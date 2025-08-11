@@ -4,6 +4,7 @@ import random
 import logging
 import argparse
 from pathlib import Path
+from datetime import datetime
 import tiktoken
 from typing import Union, Optional
 import concurrent.futures
@@ -15,8 +16,6 @@ from smolagents import CodeAgent, OpenAIServerModel
 from config import (
     DEFAULT_MODEL, AVAILABLE_MODELS,
     OPENROUTER_API_BASE, OPENROUTER_API_KEY,
-    OPENAI_API_BASE, OPENAI_API_KEY,
-    DEFAULT_PROVIDER, AVAILABLE_PROVIDERS,
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
     DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
@@ -100,6 +99,56 @@ def list_checkpoints() -> list[str]:
         checkpoints.append(checkpoint_file.stem)
     return sorted(checkpoints)
 
+def _ensure_run_dir(run_id: str) -> Path:
+    run_dir = CHECKPOINT_DIR / f"run-{run_id}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+def save_stage_checkpoint(
+    run_id: str,
+    stage_index: int,
+    stages_total: int,
+    stage_results: dict,
+    cumulative_results: dict,
+    processed_count: int,
+    total_count: int,
+    model_id: str,
+    provider: str,
+    tokens_used_total: int | None = None,
+) -> None:
+    """Save a per-stage checkpoint inside a run-specific directory.
+
+    Always called after each processed task and at the end of a stage.
+    """
+    run_dir = _ensure_run_dir(run_id)
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    unsolved_remaining = [name for name, ok in cumulative_results.items() if ok is not True]
+    checkpoint_data = {
+        "run_id": run_id,
+        "timestamp": now_iso,
+        "stage_index": stage_index,
+        "stages_total": stages_total,
+        "model": model_id,
+        "provider": provider,
+        "processed_count": processed_count,
+        "total_count": total_count,
+        "solved_stage": sum(1 for v in stage_results.values() if v is True),
+        "solved_cumulative": sum(1 for v in cumulative_results.values() if v is True),
+        "pass_rate_stage": (sum(1 for v in stage_results.values() if v is True) / total_count * 100) if total_count > 0 else 0.0,
+        "unsolved_remaining": unsolved_remaining,
+        "results_stage": stage_results,
+        "results_cumulative": cumulative_results,
+    }
+    if tokens_used_total is not None:
+        checkpoint_data["tokens_used_total"] = tokens_used_total
+    stage_file = run_dir / f"stage-{stage_index}.json"
+    try:
+        with stage_file.open('w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ Stage checkpoint saved: {stage_file}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save stage checkpoint: {e}")
+
 def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -> list[dict]:
     """
     Selects a micro-subset of tasks while preserving the ratio of solved/unsolved tasks.
@@ -143,8 +192,7 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
 
 def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
                              planning_interval: int = DEFAULT_PLANNING_INTERVAL,
-                             model_id: str = DEFAULT_MODEL,
-                             provider: str = DEFAULT_PROVIDER):
+                             model_id: str = DEFAULT_MODEL):
     """
     Create a multi-agent system for theorem proving:
     - Idea generator agent: receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent.
@@ -157,16 +205,10 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
         logger.critical(f"Configuration error: {e}")
         sys.exit(1)
 
-    # Validate credentials for selected provider and build model client
-    validate_provider_credentials(provider)
-    if provider == "openrouter":
-        api_base = OPENROUTER_API_BASE
-        api_key = OPENROUTER_API_KEY
-    elif provider == "openai":
-        api_base = OPENAI_API_BASE
-        api_key = OPENAI_API_KEY
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Use only OpenRouter provider
+    validate_provider_credentials("openrouter")
+    api_base = OPENROUTER_API_BASE
+    api_key = OPENROUTER_API_KEY
 
     model = OpenAIServerModel(
         model_id=model_id,
@@ -431,7 +473,6 @@ def process_theorem_task(theorem: dict,
                          max_steps: int,
                          planning_interval: int,
                          model_id: str,
-                         provider: str,
                          enc: Optional[tiktoken.Encoding]) -> tuple[Union[bool, str], int, str]:
     """
     A wrapper function to process a single theorem in a separate thread.
@@ -440,8 +481,7 @@ def process_theorem_task(theorem: dict,
     # Each thread gets its own agent to avoid state conflicts.
     agent = create_math_prover_agent(max_steps=max_steps,
                                      planning_interval=planning_interval,
-                                     model_id=model_id,
-                                     provider=provider)
+                                     model_id=model_id)
     
     # Each thread manages its own token count.
     thread_token_counter = {'total': 0}
@@ -478,9 +518,7 @@ def main():
                         help=f"Number of theorems to process in parallel (default: {DEFAULT_CONCURRENCY}).")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
                         help=f"Model to use (default: {DEFAULT_MODEL}). Available: {', '.join(AVAILABLE_MODELS)}")
-    parser.add_argument("--provider", type=str, default=DEFAULT_PROVIDER,
-                        choices=AVAILABLE_PROVIDERS,
-                        help=f"LLM provider to use (default: {DEFAULT_PROVIDER}). Choices: {', '.join(AVAILABLE_PROVIDERS)}")
+    # Provider is fixed to OpenRouter; CLI option removed
     
     # Checkpoint arguments
     parser.add_argument("--checkpoint", type=str, default=None,
@@ -491,6 +529,9 @@ def main():
                         help="Save checkpoint every N processed tasks (default: 5).")
     parser.add_argument("--list_checkpoints", action="store_true",
                         help="List all available checkpoints and exit.")
+    # Stages (multi-pass)
+    parser.add_argument("--stages", type=int, default=1,
+                        help="Number of passes over the dataset. 1 = single pass; 2 = rerun on unsolved, etc.")
     args = parser.parse_args()
 
     # Validate model selection
@@ -513,7 +554,7 @@ def main():
     CHECKPOINT_INTERVAL = args.checkpoint_interval
     CONCURRENCY = args.concurrency
     SELECTED_MODEL = args.model
-    SELECTED_PROVIDER = args.provider
+    SELECTED_PROVIDER = "openrouter"
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
 
@@ -529,7 +570,7 @@ def main():
         return
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
-    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Provider='{SELECTED_PROVIDER}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
+    logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
     if args.checkpoint:
         logger.info(f"Resuming from checkpoint: {args.checkpoint}")
     if args.save_checkpoint:
@@ -558,71 +599,125 @@ def main():
         logger.warning("No tasks selected for the micro-subset. Exiting.")
         return
 
-    # Load checkpoint if specified
-    start_index = 0
-    results = {}
+    # Prepare staged processing
+    total_tasks_initial = len(micro_subset)
+    name_to_theorem = {t['name']: t for t in micro_subset}
+    stages_total = max(1, int(getattr(args, 'stages', 1)))
+    logger.info(f"Stages requested: {stages_total}")
+
+    # Resume support (legacy single-file checkpoint)
+    cumulative_results: dict[str, Union[bool, str]] = {}
     if args.checkpoint:
         checkpoint_data = load_checkpoint(args.checkpoint)
         if checkpoint_data:
-            results = checkpoint_data['results']
-            start_index = checkpoint_data['processed_count']
-            logger.info(f"Resuming from task {start_index + 1}/{len(micro_subset)}")
+            cumulative_results = checkpoint_data.get('results', {})
+            logger.info(f"Loaded previous results from checkpoint '{args.checkpoint}'.")
         else:
-            logger.warning(f"Failed to load checkpoint '{args.checkpoint}', starting from beginning.")
-            start_index = 0
+            logger.warning(f"Failed to load checkpoint '{args.checkpoint}', starting fresh.")
 
-    # Agent creation is moved into the worker threads to ensure thread safety.
-
-    logger.info("\n--- Running Agent-based Theorem Proving on Micro-Subset ---")
+    # Run identifier (timestamp) for this multi-stage run
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     insufficient_credits = False
-    
-    processed_count = start_index
-    total_tasks_to_run = len(micro_subset) - start_index
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
-        future_to_theorem_name = {
-            executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, SELECTED_MODEL, SELECTED_PROVIDER, enc): theorem['name']
-            for theorem in micro_subset[start_index:]
-        }
-        
-        for future in concurrent.futures.as_completed(future_to_theorem_name):
-            theorem_name = future_to_theorem_name[future]
-            try:
-                success, tokens_used, _ = future.result()
-                
-                token_counter['total'] += tokens_used
-                results[theorem_name] = success
-                
-                if success == "INSUFFICIENT_CREDITS":
-                    insufficient_credits = True
-                    logger.critical(f"Stopping processing due to insufficient credits. Processed {processed_count - start_index}/{total_tasks_to_run} tasks in this run.")
-                    # Attempt to cancel remaining futures
-                    for f in future_to_theorem_name:
-                        f.cancel()
-                    break
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing theorem {theorem_name}: {e}")
-                results[theorem_name] = False
-            
-            processed_count += 1
-            logger.info(f"Progress: {processed_count}/{len(micro_subset)} total tasks processed.")
-            
-            # Save checkpoint periodically
-            if args.save_checkpoint and (processed_count - start_index) > 0 and (processed_count - start_index) % CHECKPOINT_INTERVAL == 0:
-                save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint, SELECTED_MODEL)
 
-    logger.info("\n--- Summary of Results ---")
-    solved_count = sum(1 for success in results.values() if success)
-    total_count = len(results)
-    
-    for name, success in results.items():
-        status = "PASSED" if success else "FAILED"
+    # Stage loop
+    current_tasks = micro_subset
+    for stage_index in range(1, stages_total + 1):
+        if stage_index == 1:
+            tasks_this_stage = current_tasks
+        else:
+            # Only unsolved from cumulative_results
+            tasks_this_stage = [name_to_theorem[name] for name in name_to_theorem.keys() if cumulative_results.get(name) is not True]
+        if not tasks_this_stage:
+            logger.info(f"Stage {stage_index}/{stages_total}: nothing to process (all solved).")
+            # Save an empty stage checkpoint to document progress
+            save_stage_checkpoint(
+                run_id=run_id,
+                stage_index=stage_index,
+                stages_total=stages_total,
+                stage_results={},
+                cumulative_results=cumulative_results,
+                processed_count=0,
+                total_count=0,
+                model_id=SELECTED_MODEL,
+                provider=SELECTED_PROVIDER,
+                tokens_used_total=token_counter['total'] if enc is not None else None,
+            )
+            continue
+
+        logger.info(f"\n--- Stage {stage_index}/{stages_total}: Processing {len(tasks_this_stage)} tasks ---")
+        stage_results: dict[str, Union[bool, str]] = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CONCURRENCY) as executor:
+            future_to_theorem_name = {
+                executor.submit(process_theorem_task, theorem, MAX_STEPS, PLANNING_INTERVAL, SELECTED_MODEL, enc): theorem['name']
+                for theorem in tasks_this_stage
+            }
+
+            processed_in_stage = 0
+            for future in concurrent.futures.as_completed(future_to_theorem_name):
+                theorem_name = future_to_theorem_name[future]
+                try:
+                    success, tokens_used, _ = future.result()
+                    token_counter['total'] += tokens_used
+                    stage_results[theorem_name] = success
+                    cumulative_results[theorem_name] = success
+                    if success == "INSUFFICIENT_CREDITS":
+                        insufficient_credits = True
+                        logger.critical("Stopping processing due to insufficient credits during stage.")
+                        # Attempt to cancel remaining futures
+                        for f in future_to_theorem_name:
+                            f.cancel()
+                        break
+                except Exception as e:
+                    logger.error(f"❌ Error processing theorem {theorem_name}: {e}")
+                    stage_results[theorem_name] = False
+                    cumulative_results[theorem_name] = False
+
+                processed_in_stage += 1
+                logger.info(f"Stage {stage_index}: progress {processed_in_stage}/{len(tasks_this_stage)}")
+
+                # Always save a stage checkpoint after each processed task
+                save_stage_checkpoint(
+                    run_id=run_id,
+                    stage_index=stage_index,
+                    stages_total=stages_total,
+                    stage_results=stage_results,
+                    cumulative_results=cumulative_results,
+                    processed_count=processed_in_stage,
+                    total_count=len(tasks_this_stage),
+                    model_id=SELECTED_MODEL,
+                    provider=SELECTED_PROVIDER,
+                    tokens_used_total=token_counter['total'] if enc is not None else None,
+                )
+
+            # End-of-stage checkpoint (ensures a full snapshot regardless of where the loop ended)
+            save_stage_checkpoint(
+                run_id=run_id,
+                stage_index=stage_index,
+                stages_total=stages_total,
+                stage_results=stage_results,
+                cumulative_results=cumulative_results,
+                processed_count=len(stage_results),
+                total_count=len(tasks_this_stage),
+                model_id=SELECTED_MODEL,
+                provider=SELECTED_PROVIDER,
+                tokens_used_total=token_counter['total'] if enc is not None else None,
+            )
+
+        if insufficient_credits:
+            break
+
+    # Final reporting
+    logger.info("\n--- Summary of Results (Cumulative) ---")
+    solved_count = sum(1 for success in cumulative_results.values() if success is True)
+    total_count = len(name_to_theorem)
+    for name in sorted(name_to_theorem.keys()):
+        success = cumulative_results.get(name, False)
+        status = "PASSED" if success is True else ("ERROR" if isinstance(success, str) else "FAILED")
         logger.info(f"{name}: {status}")
 
-    logger.info(f"\nTotal tasks processed: {total_count}")
+    logger.info(f"\nTotal tasks processed: {len(cumulative_results)}")
     logger.info(f"Successfully proven: {solved_count}")
-    
     if total_count > 0:
         success_rate = solved_count / total_count * 100
         logger.info(f"Pass rate: {success_rate:.2f}%")
@@ -634,16 +729,16 @@ def main():
         logger.info(f"Total tokens used for prompts and results: {token_counter['total']}")
     else:
         logger.info("Token counting was not available (tiktoken not installed or failed to load).")
-    
-    # Save final checkpoint if requested
+
+    # Keep legacy single-file checkpoint support if requested
     if args.save_checkpoint:
-        save_checkpoint(results, processed_count, len(micro_subset), args.save_checkpoint, SELECTED_MODEL)
-    
+        save_checkpoint(cumulative_results, len(cumulative_results), len(name_to_theorem), args.save_checkpoint, SELECTED_MODEL)
+
     # --- Handle insufficient credits error ---
     if insufficient_credits:
         logger.critical("\n❌ PROGRAM TERMINATED: Insufficient credits to continue processing.")
         logger.critical("Add more credits at https://openrouter.ai/settings/credits and try again.")
-        logger.critical(f"You can resume from checkpoint '{args.save_checkpoint}' when you have more credits.")
+        logger.critical("You can resume the next run; per-stage checkpoints are preserved.")
         sys.exit(1)
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import random
 import logging
 import argparse
 from pathlib import Path
+from datetime import datetime
 from typing import List, Optional
 import concurrent.futures
 
@@ -97,6 +98,50 @@ def select_micro_subset_stratified(all_theorems: list[dict], subset_size: int) -
     with micro_file.open('w', encoding='utf-8') as f:
         f.write(f"Micro-subset of {len(selected)} tasks selected from {total} total.\n")
     return selected
+
+
+def _ensure_run_dir(base_dir: Path, run_id: str) -> Path:
+    run_dir = base_dir / "checkpoints" / f"run-{run_id}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return run_dir
+
+def save_stage_checkpoint(
+    run_dir: Path,
+    run_id: str,
+    stage_index: int,
+    stages_total: int,
+    stage_results: dict,
+    cumulative_results: dict,
+    processed_count: int,
+    total_count: int,
+    model_id: str,
+    provider: str,
+) -> None:
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    unsolved_remaining = [name for name, ok in cumulative_results.items() if ok is not True]
+    checkpoint_data = {
+        "run_id": run_id,
+        "timestamp": now_iso,
+        "stage_index": stage_index,
+        "stages_total": stages_total,
+        "model": model_id,
+        "provider": provider,
+        "processed_count": processed_count,
+        "total_count": total_count,
+        "solved_stage": sum(1 for v in stage_results.values() if v is True),
+        "solved_cumulative": sum(1 for v in cumulative_results.values() if v is True),
+        "pass_rate_stage": (sum(1 for v in stage_results.values() if v is True) / total_count * 100) if total_count > 0 else 0.0,
+        "unsolved_remaining": unsolved_remaining,
+        "results_stage": stage_results,
+        "results_cumulative": cumulative_results,
+    }
+    stage_file = run_dir / f"stage-{stage_index}.json"
+    try:
+        with stage_file.open('w', encoding='utf-8') as f:
+            json.dump(checkpoint_data, f, indent=2, ensure_ascii=False)
+        logger.info(f"✅ Stage checkpoint saved: {stage_file}")
+    except Exception as e:
+        logger.error(f"❌ Failed to save stage checkpoint: {e}")
 
 def verify_lean_proof(theorem_name: str, theorem_statement: str, generated_proof_body: str) -> bool:
     logger.info("Attempting Lean 4 verification via Lake.")
@@ -232,6 +277,9 @@ def main():
                         help="Set the logging level.")
     parser.add_argument("--concurrency", type=int, default=4,
                         help="Number of theorems to process in parallel (default: 4).")
+    # Stages (multi-pass)
+    parser.add_argument("--stages", type=int, default=1,
+                        help="Number of passes over the dataset. 1 = single pass; 2 = rerun on unsolved, etc.")
     args = parser.parse_args()
 
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
@@ -254,30 +302,58 @@ def main():
 
     global client
     client = make_client()
-    results: dict[str, bool] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
-        future_to_theorem = {executor.submit(process_theorem_task, th): th['name'] for th in micro_subset}
-        processed_count = 0
-        for future in concurrent.futures.as_completed(future_to_theorem):
-            name = future_to_theorem[future]
-            try:
-                success, _ = future.result(timeout=360)
-                results[name] = success
-            except concurrent.futures.TimeoutError:
-                logger.error(f"❌ Timeout processing theorem {name}")
-                results[name] = False
-            except Exception as e:
-                logger.error(f"❌ Error processing theorem {name}: {e}")
-                results[name] = False
-            processed_count += 1
-            logger.info(f"Progress: {processed_count}/{len(micro_subset)} total tasks processed.")
+    # Prepare staged processing
+    name_to_theorem = {t['name']: t for t in micro_subset}
+    stages_total = max(1, int(getattr(args, 'stages', 1)))
+    logger.info(f"Stages requested: {stages_total}")
 
-    logger.info("\n--- Summary of Results ---")
-    solved = sum(1 for ok in results.values() if ok)
-    total = len(results)
-    for name, ok in results.items():
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_dir = _ensure_run_dir(TMP_DIR, run_id)
+
+    cumulative_results: dict[str, bool] = {}
+    for stage_index in range(1, stages_total + 1):
+        if stage_index == 1:
+            tasks_this_stage = micro_subset
+        else:
+            tasks_this_stage = [name_to_theorem[name] for name in name_to_theorem.keys() if cumulative_results.get(name) is not True]
+        if not tasks_this_stage:
+            logger.info(f"Stage {stage_index}/{stages_total}: nothing to process (all solved).")
+            save_stage_checkpoint(run_dir, run_id, stage_index, stages_total, {}, cumulative_results, 0, 0, args.model, "openrouter")
+            continue
+
+        logger.info(f"\n--- Stage {stage_index}/{stages_total}: Processing {len(tasks_this_stage)} tasks ---")
+        stage_results: dict[str, bool] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as executor:
+            future_to_theorem = {executor.submit(process_theorem_task, th): th['name'] for th in tasks_this_stage}
+            processed_in_stage = 0
+            for future in concurrent.futures.as_completed(future_to_theorem):
+                name = future_to_theorem[future]
+                try:
+                    success, _ = future.result(timeout=360)
+                    stage_results[name] = success
+                    cumulative_results[name] = success
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"❌ Timeout processing theorem {name}")
+                    stage_results[name] = False
+                    cumulative_results[name] = False
+                except Exception as e:
+                    logger.error(f"❌ Error processing theorem {name}: {e}")
+                    stage_results[name] = False
+                    cumulative_results[name] = False
+                processed_in_stage += 1
+                logger.info(f"Stage {stage_index}: progress {processed_in_stage}/{len(tasks_this_stage)}")
+                save_stage_checkpoint(run_dir, run_id, stage_index, stages_total, stage_results, cumulative_results, processed_in_stage, len(tasks_this_stage), args.model, "openrouter")
+
+        # end-of-stage snapshot
+        save_stage_checkpoint(run_dir, run_id, stage_index, stages_total, stage_results, cumulative_results, len(stage_results), len(tasks_this_stage), args.model, "openrouter")
+
+    logger.info("\n--- Summary of Results (Cumulative) ---")
+    solved = sum(1 for ok in cumulative_results.values() if ok)
+    total = len(name_to_theorem)
+    for name in sorted(name_to_theorem.keys()):
+        ok = cumulative_results.get(name, False)
         logger.info(f"{name}: {'PASSED' if ok else 'FAILED'}")
-    logger.info(f"\nTotal tasks processed: {total}")
+    logger.info(f"\nTotal tasks processed: {len(cumulative_results)}")
     logger.info(f"Successfully proven: {solved}")
     logger.info(f"Pass rate: {solved / total * 100:.2f}%" if total > 0 else "No tasks processed.")
 
