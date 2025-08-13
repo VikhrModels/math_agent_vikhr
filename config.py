@@ -51,10 +51,10 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_JSON_FILE = "valid.json"
 
 # Agent step limit
-DEFAULT_MAX_STEPS = 5  # Maximum number of agent steps per theorem
+DEFAULT_MAX_STEPS = 10  # Maximum number of agent steps per theorem
 
 # Planning interval for agent (how often to run planning phase)
-DEFAULT_PLANNING_INTERVAL = 2  # Run planning every N steps
+DEFAULT_PLANNING_INTERVAL = 1  # Run planning every N steps
 
 # --- Concurrency ---
 DEFAULT_CONCURRENCY = 4 # Number of theorems to process in parallel

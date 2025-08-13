@@ -194,65 +194,80 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
                              planning_interval: int = DEFAULT_PLANNING_INTERVAL,
                              model_id: str = DEFAULT_MODEL):
     """
-    Create a multi-agent system for theorem proving:
-    - Idea generator agent: receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent.
-    - Code generator agent: generates Lean code from the strategy and calls the Lean compiler.
-    Returns the main agent (idea generator).
+    Re-architected multi-agent Lean prover based on a top-down planner.
+
+    Returns the planner/orchestrator agent that internally manages:
+        • search_agent — semantic search specialist powered by `moogle_semantic_search`
+        • code_agent   — Lean code generator/verifier using `verify_lean_proof`
     """
+    # Validate configuration & credentials
     try:
         validate_config()
     except (ValueError, FileNotFoundError) as e:
         logger.critical(f"Configuration error: {e}")
         sys.exit(1)
 
-    # Use only OpenRouter provider
     validate_provider_credentials("openrouter")
     api_base = OPENROUTER_API_BASE
     api_key = OPENROUTER_API_KEY
 
+    # Shared model across sub-agents (cheaper & coherent)
     model = OpenAIServerModel(
         model_id=model_id,
         api_base=api_base,
         api_key=api_key,
     )
 
-    # Code generator agent (uses only the Lean proof verifier)
+    # --- Search Agent ---------------------------------------------------
+    search_agent = CodeAgent(
+        tools=[moogle_semantic_search],
+        model=model,
+        max_steps=6,
+        planning_interval=1,
+        name="search_agent",
+        description=(
+            "You are a semantic search specialist for Lean proofs. "
+            "Given a goal and its context you issue PARALLEL queries to the `moogle_semantic_search` tool in a single "
+            "Python code block, aggregate and return the most useful mathlib facts together with short hints on how "
+            "they might be applied (rw/apply/simp/etc.). "
+            "Batch all queries; never run them one by one in distinct steps."
+        ),
+    )
+
+    # --- Code Agent -----------------------------------------------------
     code_agent = CodeAgent(
         tools=[verify_lean_proof],
         model=model,
         max_steps=10,
         planning_interval=1,
-        name="code_generator",
+        name="code_agent",
         description=(
-            "Generates Lean 4 code from a proof strategy and calls the Lean compiler via Lake. "
-            "Returns the code and compiler output. "
-            "CRITICAL RULES: "
-            "1. NEVER write or execute Python code. "
-            "2. NEVER do mathematical calculations in Python. "
-            "3. NEVER create variables, functions, or loops in Python. "
-            "4. ONLY output valid Lean 4 code. "
-            "5. Your output must be a complete Lean theorem statement and proof. "
-            "6. EXAMPLE: theorem example : 2 + 2 = 4 := by norm_num. "
-            "7. Do NOT include any Python code, comments, or analysis - only Lean code. "
-            "8. IMPORTANT: The proof MUST be formatted using 'by' syntax for simple proofs or 'begin' and 'end' syntax for complex proofs. "
-            "9. ALWAYS include 'import MiniF2F.Minif2fImport' at the top. "
-            "10. Use correct Lean 4 syntax: 'Finset.range' (capital F), not 'finset.range'."
-        )
+            "Generates Lean-4 code skeletons and iteratively replaces `sorry` with real proofs. "
+            "In a single iteration it may prepare SEVERAL alternative proofs for the current lemma and verify them via "
+            "`verify_lean_proof`, choosing the best compiling version. "
+            "NEVER write Python for mathematical reasoning — only Lean. Always include `import MiniF2F.Minif2fImport` "
+            "at the top and ensure the final file contains NO `sorry`."
+        ),
     )
 
-    # Idea generator agent (can search for lemmas and call the code generator)
-    idea_agent = CodeAgent(
-        tools=[moogle_semantic_search],
+    # --- Planner / Orchestrator ----------------------------------------
+    planner_agent = CodeAgent(
+        tools=[verify_lean_proof, moogle_semantic_search],  # quick fast-path compilations
+        managed_agents=[search_agent, code_agent],
         model=model,
-        max_steps=10,
-        planning_interval=1,
-        managed_agents=[code_agent],
-        name="idea_generator",
-        description="Receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent."
+        max_steps=max_steps,
+        planning_interval=planning_interval,
+        name="planner_agent",
+        description=(
+            "Top-down planner that decomposes a theorem into lemma stubs, assigns difficulty + criticality, "
+            "and orchestrates proof construction. It decides when to call `search_agent` for facts or `code_agent` "
+            "for Lean code, manages token budgets, and revises the plan when Lean feedback suggests better "
+            "formulations. Fast-path easy goals by directly generating small Lean snippets and compiling them via "
+            "`verify_lean_proof`."
+        ),
     )
 
-
-    return idea_agent
+    return planner_agent
 
 def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS, enc=None, token_counter=None) -> Union[bool, str]:
     """
@@ -271,135 +286,33 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
     logger.info(f"Agent limit: max_steps={max_steps}")
 
     try:
+        # --- Rewritten planner-centric prompt ---
         prompt = (
-            f"You are an expert Lean 4 theorem prover agent. You will be given a mathematical theorem to prove.\n"
-            f"You have access to the following tools, which you can call as Python functions in your code blocks.\n"
-            f"To solve the task, proceed in a series of steps, in a cycle of 'Thought:', 'Code:', and 'Observation:' sequences.\n\n"
-
-            f"At each step, in the 'Thought:' sequence, explain your reasoning and which tools you want to use.\n"
-            f"Then, in the 'Code:' sequence, write the code in simple Python, ending with '<end_code>'.\n"
-            f"Use print() to display important intermediate results. These will appear in the 'Observation:' field for the next step.\n"
-            f"In the end, return a final answer using the final_answer tool.\n\n"
-
-            f"When searching for relevant lemmas or theorems, batch all necessary moogle_semantic_search queries into a single code block for efficiency. Do not call moogle_semantic_search one at a time in separate steps.\n\n"
-
-            f"EXAMPLE OF BATCHED SEARCHES (CORRECT):\n"
-            f"Code:\n"
-            f"""```py\nresults_lemma1 = moogle_semantic_search(query=\"lemma about real addition\")\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma1)\nprint(results_lemma2)\n```<end_code>\n"""
-            f"Observation: [results for both queries]\n\n"
-            f"EXAMPLE OF SINGLE SEARCH PER STEP (WRONG):\n"
-            f"Code:\n"
-            f"""```py\nresults_lemma1 = moogle_semantic_search(query=\"lemma about real addition\")\nprint(results_lemma1)\n```<end_code>\n"""
-            f"Observation: [results for first query]\n\n"
-            f"Code:\n"
-            f"""```py\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma2)\n```<end_code>\n"""
-            f"Observation: [results for second query]\n\n"
-            f"Always batch your semantic search queries as shown in the correct example above.\n\n"
-
-            f"While using the code agent you must mention those rules in the prompt:\n"
-            f"CRITICAL: You must ONLY generate Lean 4 code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n"
-            f"EXAMPLE OF CORRECT APPROACH:\n"
-            f"theorem_statement = '''theorem example : 2 + 2 = 4 := by norm_num'''\n"
-            f"result = verify_lean_proof(theorem_statement)\n"
-            f"DO NOT DO THIS (WRONG):\n"
-            f"# Mathematical analysis in Python\n"
-            f"for i in range(10):\n"
-            f"    print(i)\n"
-            f"Your response must be ONLY Lean code starting with 'theorem' and ending with 'end'.\n"
-            f"No Python code, no comments, no explanations.\n\n"
-            f"IMPORTANT: When calling code_generator, NEVER ask it to write Python code or do calculations. "
-            f"code_generator should ONLY generate Lean 4 code. If you need mathematical analysis, do it in your own reasoning, "
-            f"then pass the strategy to code_generator to convert it to Lean code.\n\n"
-
-            f"Here are a few examples using your available tools and agents:\n"
-            f"---\n"
-            f"Task: 'Prove a theorem about real number arithmetic.'\n\n"
-            f"Thought: I will search for relevant lemmas about real number arithmetic using moogle_semantic_search.\n"
-            f"Code:\n"
-            f"""```py\nresults = moogle_semantic_search(query=\"real number arithmetic lemma\")\nprint(results)\n```<end_code>\n"""
-            f"Observation: [A list of relevant lemmas and their Lean code]\n\n"
-            f"Thought: I will now develop a proof strategy and call the code_generator agent to generate and verify Lean code.\n"
-            f"Code:\n"
-            f"""```py\nstrategy = 'Use the lemma real.add_assoc and norm_num for simplification.'\nlemmas = 'real.add_assoc'\nresult = code_generator(theorem_statement=theorem['statement'], proof_strategy=strategy, lemmas=lemmas)\nprint(result)\n```<end_code>\n"""
-            f"Observation: {{'lean_code': '...', 'compiler_output': 'error: ...'}}\n\n"
-            f"Thought: The proof failed due to a missing import. I will update my strategy and call code_generator again.\n"
-            f"Code:\n"
-            f"""```py\nstrategy = 'Add the necessary import for real numbers and use real.add_assoc.'\nlemmas = 'import data.real.basic, real.add_assoc'\nresult = code_generator(theorem_statement=theorem['statement'], proof_strategy=strategy, lemmas=lemmas)\nprint(result)\n```<end_code>\n"""
-            f"Observation: {{'lean_code': '...', 'compiler_output': 'success'}}\n\n"
-            f"Thought: The proof was successful. I will return the final answer.\n"
-            f"Code:\n"
-            f"""```py\nfinal_answer(result['lean_code'])\n```<end_code>\n"""
-            f"---\n\n"
-            f"=== FEW-SHOT EXAMPLES FROM MINIF2F DATASET ===\n"
-            f"Here are examples of different complexity levels to guide your proof strategies:\n\n"
-            f"1. SIMPLE CALCULATION (norm_num):\n"
-            f"theorem mathd_numbertheory_299 : 1 * 3 * 5 * 7 * 9 * 11 * 13 % 10 = 5 := by norm_num\n\n"
-            f"2. LINEAR ALGEBRA (linarith):\n"
-            f"theorem mathd_algebra_160 (n x : ℝ) (h₀ : n + x = 97) (h₁ : n + 5 * x = 265) : n + 2 * x = 139 := by linarith\n\n"
-            f"3. FIELD SIMPLIFICATION + LINEAR:\n"
-            f"theorem mathd_algebra_33 (x y z : ℝ) (h₀ : x ≠ 0) (h₁ : 2 * x = 5 * y) (h₂ : 7 * y = 10 * z) : z / x = 7 / 25 := by\n"
-            f"  field_simp\n"
-            f"  nlinarith\n\n"
-            f"4. REWRITING + LINEAR:\n"
-            f"theorem mathd_algebra_346 (f g : ℝ → ℝ) (h₀ : ∀ x, f x = 2 * x - 3) (h₁ : ∀ x, g x = x + 1) : g (f 5 - 1) = 7 := by\n"
-            f"  rw [h₀, h₁]\n"
-            f"  norm_num\n\n"
-            f"5. COMPLEX ALGEBRAIC MANIPULATION:\n"
-            f"theorem mathd_algebra_263 (y : ℝ) (h₀ : 0 ≤ 19 + 3 * y) (h₁ : Real.sqrt (19 + 3 * y) = 7) : y = 10 := by\n"
-            f"  revert y h₀ h₁\n"
-            f"  intro x hx\n"
-            f"  rw [Real.sqrt_eq_iff_sq_eq hx]\n"
-            f"  swap\n"
-            f"  norm_num\n"
-            f"  intro h\n"
-            f"  nlinarith\n\n"
-            f"=== RULES YOU MUST ALWAYS FOLLOW ===\n"
-            f"1. Always provide a 'Thought:' sequence, and a 'Code:\n```py' sequence ending with '```<end_code>' sequence, else you will fail.\n"
-            f"2. Use only variables that you have defined!\n"
-            f"3. Always use the right arguments for the tools. DO NOT pass the arguments as a dict, but use the arguments directly as in moogle_semantic_search(query=...).\n"
-            f"4. Never write or execute Python code for proof steps or Lean code generation. Only use code_generator for Lean code.\n"
-            f"5. When using code_generator, you must clearly state the Lean theorem statement and call the agent as in the correct example above.\n"
-            f"6. After developing or updating a proof strategy, ALWAYS call the code_generator agent to generate and verify Lean code, even if the previous attempt failed. Every iteration must include a call to code_generator with the current strategy and lemmas.\n"
-            f"7. Do not chain too many sequential tool calls in the same code block, especially when the output format is unpredictable.\n"
-            f"8. Call a tool only when needed, and never re-do a tool call that you previously did with the exact same parameters.\n"
-            f"9. Don't name any new variable with the same name as a tool.\n"
-            f"10. Never create any notional variables in your code, as having these in your logs might derail you from the true variables.\n"
-            f"11. You can use imports in your code, but only from the following list of modules: {{authorized_imports}}\n"
-            f"12. The state persists between code executions: so if in one step you've created variables or imported modules, these will all persist.\n"
-            f"13. Don't give up! You're in charge of solving the task, not providing directions to solve it.\n"
-            f"14. CRITICAL: All final theorem proofs MUST use Lean 4 syntax with 'by' keyword. Use 'begin...end' only for complex multi-step proofs.\n"
-            f"15. CRITICAL: Always include 'import MiniF2F.Minif2fImport' at the top of your Lean code.\n"
-            f"16. CRITICAL: Use correct Lean 4 syntax: 'Finset.range' (capital F), not 'finset.range'.\n"
-            f"17. CRITICAL: Keep proofs simple and direct. Avoid complex manual proofs that may timeout.\n"
-            f"18. CRITICAL: Use ONLY these proven Lean 4 tactics: norm_num, linarith, nlinarith, ring, simp, rw, exact, apply, cases, induction, tauto, field_simp, ring_nf, assumption, contradiction, exfalso, by_contra, existsi, use, refine, constructor, split, left, right, intro, intros, revert, generalize, specialize, have, let, calc, suffices, by_cases, by_contradiction, push_neg, pull_out, push_in, clear, rename, change, unfold, delta, dsimp, rw_r, erw, rwa, rw_rule, rw_search, simp_rw, simp_all, simp_intros, simp_arith, norm_cast, push_cast, pull_cast, ring_exp, ring_nf, linarith!, nlinarith!, norm_num!, ring!, simp!, rw!, exact!, apply!, cases!, induction!, tauto!, field_simp!, ring_nf!, assumption!, contradiction!, exfalso!, by_contra!, existsi!, use!, refine!, constructor!, split!, left!, right!, intro!, intros!, revert!, generalize!, specialize!, have!, let!, calc!, suffices!, by_cases!, by_contradiction!, push_neg!, pull_out!, push_in!, clear!, rename!, change!, unfold!, delta!, dsimp!, rw_r!, erw!, rwa!, rw_rule!, rw_search!, simp_rw!, simp_all!, simp_intros!, simp_arith!, norm_cast!, push_cast!, pull_cast!, ring_exp!, ring_nf!.\n"
-            f"19. CRITICAL: NEVER use tactics that don't exist in Lean 4. If unsure, stick to: norm_num, linarith, ring, simp, rw, exact, apply.\n"
-            f"20. CRITICAL: NEVER invent new tactics or use tactics you're not sure exist. Stick to the proven list above.\n"
-            f"21. CRITICAL: Use correct Lean 4 syntax: 'Finset.prod' instead of '∏', 'Finset.sum' instead of '∑', 'Finset.range' (capital F), not 'finset.range'.\n"
-            f"22. CRITICAL: If a proof seems too complex, use 'sorry' and try a simpler approach.\n\n"
-            f"=== REQUIRED PROOF FORMAT ===\n"
-            f"Your final answer must be formatted exactly like this:\n"
-            f"import MiniF2F.Minif2fImport\n\n"
-            f"theorem theorem_name :\n"
-            f"  statement_here :=\n"
-            f"by\n"
-            f"  proof_steps_here\n\n"
-            f"For simple proofs:\n"
-            f"import MiniF2F.Minif2fImport\n\n"
-            f"theorem mathd_algebra_10 :\n"
-            f"  abs ((120 : ℝ)/100 * 30 - 130/100 * 20) = 10 :=\n"
-            f"by norm_num\n\n"
-            f"For complex proofs:\n"
-            f"import MiniF2F.Minif2fImport\n\n"
-            f"theorem complex_example :\n"
-            f"  statement_here :=\n"
-            f"begin\n"
-            f"  proof_step_1\n"
-            f"  proof_step_2\n"
-            f"  proof_step_3\n"
-            f"end\n\n"
-            f"=== YOUR TASK ===\n"
-            f"Prove this theorem:\n{theorem['statement']}\n\n"
-            f"Begin by analyzing the theorem and planning your approach!"
+            "SYSTEM OVERVIEW:\n"
+            "You control a TEAM of specialised agents that solve Lean theorems via a top-down → bottom-up pipeline:\n"
+            "  • planner_agent  (you) — decomposes the goal into lemma stubs, assigns difficulty/criticality and orchestrates.\n"
+            "  • search_agent   — batches semantic searches with moogle_semantic_search and returns curated facts + hints.\n"
+            "  • code_agent     — writes Lean-4 code: first a skeleton with `sorry`, then iteratively replaces `sorry` with proofs,\n"
+            "                     trying SEVERAL variants per iteration and keeping the first compiling proof.\n"
+            "  • verify_lean_proof — Lean compiler wrapper, the single source of truth.\n\n"
+            "WORKFLOW (high-level):\n"
+            "  1. NORMALISE the theorem (simplify quantifiers, bring into canonical forms).\n"
+            "  2. BUILD a DAG of lemma stubs (no proofs) with <complexity, criticality>. Limit recursion depth to 3.\n"
+            "  3. Generate a Lean skeleton (imports + main theorem + lemma stubs). Ensure it compiles.\n"
+            "  4. LOOP while there are `sorry`:\n"
+            "     a. pick the highest-priority lemma (critical × moderate complexity).\n"
+            "     b. attempt cheap tactics first (simp/rw/norm_num etc). If solved ⇒ substitute and recompile.\n"
+            "     c. if needed, call search_agent ONCE with a batch of re-phrased queries. Integrate returned facts.\n"
+            "     d. ask code_agent to produce ≤3 candidate proofs using gathered facts. Accept the first compiling one.\n"
+            "     e. if Lean feedback shows type mismatch / missing instances / timeout ⇒ revise stub or split it.\n"
+            "  5. When no `sorry` remain, return the full Lean code as FINAL_ANSWER.\n\n"
+            "BUDGETS: planner iterations ≤ {max_steps}; code_agent iterations per lemma ≤ 7; search_agent refinements ≤ 3.\n\n"
+            "FAST-PATH: if the current goal is recognised as ""easy"" (single tactic likely) you may bypass sub-agents: craft a\n"
+            "small Lean snippet yourself and verify via verify_lean_proof directly.\n\n"
+            "SEMAPHORES: Always batch queries to search_agent, never sequential single queries. Do not request Python maths.\n"
+            "All Lean code MUST import MiniF2F.Minif2fImport and contain no `sorry` at termination.\n\n"
+            "TASK — prove the following theorem:\n\n{theorem['statement']}\n\n"
+            "First: classify overall difficulty (easy / medium / hard) and outline the DAG plan (list lemma names + one-line goal)."
         )
 
         # Count tokens for the prompt
