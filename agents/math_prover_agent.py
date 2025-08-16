@@ -287,33 +287,39 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
 
     try:
         # --- Rewritten planner-centric prompt ---
-        prompt = (
-            "SYSTEM OVERVIEW:\n"
-            "You control a TEAM of specialised agents that solve Lean theorems via a top-down → bottom-up pipeline:\n"
-            "  • planner_agent  (you) — decomposes the goal into lemma stubs, assigns difficulty/criticality and orchestrates.\n"
-            "  • search_agent   — batches semantic searches with moogle_semantic_search and returns curated facts + hints.\n"
-            "  • code_agent     — writes Lean-4 code: first a skeleton with `sorry`, then iteratively replaces `sorry` with proofs,\n"
-            "                     trying SEVERAL variants per iteration and keeping the first compiling proof.\n"
-            "  • verify_lean_proof — Lean compiler wrapper, the single source of truth.\n\n"
-            "WORKFLOW (high-level):\n"
-            "  1. NORMALISE the theorem (simplify quantifiers, bring into canonical forms).\n"
-            "  2. BUILD a DAG of lemma stubs (no proofs) with <complexity, criticality>. Limit recursion depth to 3.\n"
-            "  3. Generate a Lean skeleton (imports + main theorem + lemma stubs). Ensure it compiles.\n"
-            "  4. LOOP while there are `sorry`:\n"
-            "     a. pick the highest-priority lemma (critical × moderate complexity).\n"
-            "     b. attempt cheap tactics first (simp/rw/norm_num etc). If solved ⇒ substitute and recompile.\n"
-            "     c. if needed, call search_agent ONCE with a batch of re-phrased queries. Integrate returned facts.\n"
-            "     d. ask code_agent to produce ≤3 candidate proofs using gathered facts. Accept the first compiling one.\n"
-            "     e. if Lean feedback shows type mismatch / missing instances / timeout ⇒ revise stub or split it.\n"
-            "  5. When no `sorry` remain, return the full Lean code as FINAL_ANSWER.\n\n"
-            "BUDGETS: planner iterations ≤ {max_steps}; code_agent iterations per lemma ≤ 7; search_agent refinements ≤ 3.\n\n"
-            "FAST-PATH: if the current goal is recognised as ""easy"" (single tactic likely) you may bypass sub-agents: craft a\n"
-            "small Lean snippet yourself and verify via verify_lean_proof directly.\n\n"
-            "SEMAPHORES: Always batch queries to search_agent, never sequential single queries. Do not request Python maths.\n"
-            "All Lean code MUST import MiniF2F.Minif2fImport and contain no `sorry` at termination.\n\n"
-            "TASK — prove the following theorem:\n\n{theorem['statement']}\n\n"
-            "First: classify overall difficulty (easy / medium / hard) and outline the DAG plan (list lemma names + one-line goal)."
-        )
+        prompt = f"""SYSTEM OVERVIEW:
+You control a TEAM of specialised agents that solve Lean theorems via a top-down → bottom-up pipeline:
+  • planner_agent  (you) — decomposes the goal into lemma stubs, assigns difficulty/criticality and orchestrates.
+  • search_agent   — batches semantic searches with moogle_semantic_search and returns curated facts + hints.
+  • code_agent     — writes Lean-4 code: first a skeleton with `sorry`, then iteratively replaces `sorry` with proofs,
+                     trying SEVERAL variants per iteration and keeping the first compiling proof.
+  • verify_lean_proof — Lean compiler wrapper, the single source of truth.
+
+WORKFLOW (high-level):
+  1. NORMALISE the theorem (simplify quantifiers, bring into canonical forms).
+  2. BUILD a DAG of lemma stubs (no proofs) with <complexity, criticality>. Limit recursion depth to 3.
+  3. Generate a Lean skeleton (imports + main theorem + lemma stubs). Ensure it compiles.
+  4. LOOP while there are `sorry`:
+     a. pick the highest-priority lemma (critical × moderate complexity).
+     b. attempt cheap tactics first (simp/rw/norm_num etc). If solved ⇒ substitute and recompile.
+     c. if needed, call search_agent ONCE with a batch of re-phrased queries. Integrate returned facts.
+     d. ask code_agent to produce ≤3 candidate proofs using gathered facts. Accept the first compiling one.
+     e. if Lean feedback shows type mismatch / missing instances / timeout ⇒ revise stub or split it.
+  5. When no `sorry` remain, return the full Lean code as FINAL_ANSWER.
+
+BUDGETS: planner iterations ≤ {max_steps}; code_agent iterations per lemma ≤ 7; search_agent refinements ≤ 3.
+
+FAST-PATH: if the current goal is recognised as "easy" (single tactic likely) you may bypass sub-agents: craft a
+small Lean snippet yourself and verify via verify_lean_proof directly.
+
+SEMAPHORES: Always batch queries to search_agent, never sequential single queries. Do not request Python maths.
+All Lean code MUST import MiniF2F.Minif2fImport and contain no `sorry` at termination.
+
+TASK — prove the following theorem:
+
+{theorem['statement']}
+
+First: classify overall difficulty (easy / medium / hard) and outline the DAG plan (list lemma names + one-line goal)."""
 
         # Count tokens for the prompt
         if enc is not None and token_counter is not None:
