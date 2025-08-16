@@ -295,6 +295,9 @@ You control a TEAM of specialised agents that solve Lean theorems via a top-down
                      trying SEVERAL variants per iteration and keeping the first compiling proof.
   • verify_lean_proof — Lean compiler wrapper, the single source of truth.
 
+IMPORTANT: FOCUS ON CODE GENERATION FIRST, not search. Only use search_agent when you have a specific fact you need.
+Most theorems can be solved with standard Lean tactics and mathematical reasoning.
+
 WORKFLOW (high-level):
   1. NORMALISE the theorem (simplify quantifiers, bring into canonical forms).
   2. BUILD a DAG of lemma stubs (no proofs) with <complexity, criticality>. Limit recursion depth to 3.
@@ -315,11 +318,30 @@ small Lean snippet yourself and verify via verify_lean_proof directly.
 SEMAPHORES: Always batch queries to search_agent, never sequential single queries. Do not request Python maths.
 All Lean code MUST import MiniF2F.Minif2fImport and contain no `sorry` at termination.
 
+FEW-SHOT EXAMPLES:
+
+EXAMPLE 1 (Medium complexity - algebraic manipulation):
+Theorem: mathd_algebra_116 (k x : ℝ) (h₀ : x = (13 - Real.sqrt 131) / 4) (h₁ : 2 * x ^ 2 - 13 * x + k = 0) : k = 19 / 4
+Solution approach: Substitute h₀ into h₁, solve for k using algebra and norm_num.
+
+EXAMPLE 2 (Hard complexity - number theory with induction):
+Theorem: induction_sum2kp1npqsqm1 (n : ℕ) : ∑ k ∈ Finset.range n, (2 * k + 3) = (n + 1) ^ 2 - 1
+Solution approach: Use mathematical induction, base case n=0, inductive step with sum manipulation.
+
+EXAMPLE 3 (Hard complexity - complex analysis):
+Theorem: amc12a_2019_p21 (z : ℂ) (h₀ : z = (1 + Complex.I) / Real.sqrt 2) : ((∑ k ∈ Finset.Icc 1 12, z ^ k ^ 2) * (∑ k ∈ Finset.Icc 1 12, 1 / z ^ k ^ 2)) = 36
+Solution approach: Use properties of complex numbers, geometric series, and power reduction.
+
+EXAMPLE 4 (Medium complexity - function analysis):
+Theorem: amc12_2000_p9 (f : ℝ → ℝ) (h₀ : ∀ x > 0, ∀ y > 0, f (x * y) = f x / y) (h₁ : f 500 = 3) : f 600 = 5 / 2
+Solution approach: Use functional equation to find f(x) = c/x, solve for constant c.
+
 TASK — prove the following theorem:
 
 {theorem['statement']}
 
-First: classify overall difficulty (easy / medium / hard) and outline the DAG plan (list lemma names + one-line goal)."""
+First: classify overall difficulty (easy / medium / hard) and outline the DAG plan (list lemma names + one-line goal).
+Focus on generating Lean code directly rather than searching for facts."""
 
         # Count tokens for the prompt
         if enc is not None and token_counter is not None:
