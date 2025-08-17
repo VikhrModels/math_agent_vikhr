@@ -75,7 +75,7 @@ def save_checkpoint(results: dict, processed_count: int, total_count: int, check
         logger.error(f"❌ Failed to save checkpoint: {e}")
 
 def load_checkpoint(checkpoint_name: str) -> Optional[dict]:
-    """Load progress from a checkpoint file."""
+    """Load progress from a checkpoint file (legacy format)."""
     checkpoint_file = CHECKPOINT_DIR / f"{checkpoint_name}.json"
     
     if not checkpoint_file.exists():
@@ -92,11 +92,88 @@ def load_checkpoint(checkpoint_name: str) -> Optional[dict]:
         logger.error(f"❌ Failed to load checkpoint: {e}")
         return None
 
+def load_stage_checkpoint(run_id: str, stage_index: int = None) -> Optional[dict]:
+    """Load progress from a stage-based checkpoint file.
+    
+    Args:
+        run_id: The run identifier (e.g., '20250816-204214')
+        stage_index: Specific stage to load. If None, loads the latest stage.
+    
+    Returns:
+        Checkpoint data or None if not found
+    """
+    run_dir = CHECKPOINT_DIR / f"run-{run_id}"
+    
+    if not run_dir.exists():
+        logger.warning(f"Run directory not found: {run_dir}")
+        return None
+    
+    # If stage_index is not specified, find the latest stage
+    if stage_index is None:
+        stage_files = list(run_dir.glob("stage-*.json"))
+        if not stage_files:
+            logger.warning(f"No stage files found in {run_dir}")
+            return None
+        
+        # Sort by stage number and get the latest
+        stage_numbers = []
+        for stage_file in stage_files:
+            try:
+                stage_num = int(stage_file.stem.split('-')[1])
+                stage_numbers.append(stage_num)
+            except (ValueError, IndexError):
+                continue
+        
+        if not stage_numbers:
+            logger.warning(f"No valid stage files found in {run_dir}")
+            return None
+        
+        stage_index = max(stage_numbers)
+    
+    stage_file = run_dir / f"stage-{stage_index}.json"
+    
+    if not stage_file.exists():
+        logger.warning(f"Stage checkpoint file not found: {stage_file}")
+        return None
+    
+    try:
+        with stage_file.open('r', encoding='utf-8') as f:
+            checkpoint_data = json.load(f)
+        logger.info(f"✅ Stage checkpoint loaded: {stage_file}")
+        logger.info(f"   Run ID: {checkpoint_data.get('run_id', 'unknown')}")
+        logger.info(f"   Stage: {checkpoint_data.get('stage_index', 'unknown')}/{checkpoint_data.get('stages_total', 'unknown')}")
+        logger.info(f"   Processed: {checkpoint_data.get('processed_count', 0)}/{checkpoint_data.get('total_count', 0)} tasks")
+        logger.info(f"   Solved (cumulative): {checkpoint_data.get('solved_cumulative', 0)}")
+        return checkpoint_data
+    except Exception as e:
+        logger.error(f"❌ Failed to load stage checkpoint: {e}")
+        return None
+
 def list_checkpoints() -> list[str]:
     """List all available checkpoint files."""
     checkpoints = []
+    
+    # Legacy checkpoints
     for checkpoint_file in CHECKPOINT_DIR.glob("*.json"):
-        checkpoints.append(checkpoint_file.stem)
+        checkpoints.append(f"legacy: {checkpoint_file.stem}")
+    
+    # Stage-based checkpoints (runs)
+    for run_dir in CHECKPOINT_DIR.glob("run-*"):
+        if run_dir.is_dir():
+            run_id = run_dir.name[4:]  # Remove "run-" prefix
+            stage_files = list(run_dir.glob("stage-*.json"))
+            if stage_files:
+                stage_numbers = []
+                for stage_file in stage_files:
+                    try:
+                        stage_num = int(stage_file.stem.split('-')[1])
+                        stage_numbers.append(stage_num)
+                    except (ValueError, IndexError):
+                        continue
+                if stage_numbers:
+                    latest_stage = max(stage_numbers)
+                    checkpoints.append(f"run: {run_id} (stages 1-{latest_stage})")
+    
     return sorted(checkpoints)
 
 def _ensure_run_dir(run_id: str) -> Path:
@@ -463,7 +540,11 @@ def main():
     
     # Checkpoint arguments
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Name of checkpoint to resume from (without .json extension).")
+                        help="Name of checkpoint to resume from (without .json extension). Legacy format.")
+    parser.add_argument("--resume_run", type=str, default=None,
+                        help="Resume from a specific run ID (e.g., '20250816-204214'). New stage-based format.")
+    parser.add_argument("--resume_stage", type=int, default=None,
+                        help="Specific stage to resume from (used with --resume_run). If not specified, resumes from the latest stage.")
     parser.add_argument("--save_checkpoint", type=str, default=None,
                         help="Name for saving checkpoint (without .json extension).")
     parser.add_argument("--checkpoint_interval", type=int, default=5,
@@ -512,8 +593,21 @@ def main():
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
     logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
+    
+    # Validate checkpoint options
+    if args.checkpoint and args.resume_run:
+        logger.error("Cannot specify both --checkpoint and --resume_run. Use only one.")
+        return
+    
     if args.checkpoint:
-        logger.info(f"Resuming from checkpoint: {args.checkpoint}")
+        logger.info(f"Resuming from legacy checkpoint: {args.checkpoint}")
+    elif args.resume_run:
+        logger.info(f"Resuming from run: {args.resume_run}")
+        if args.resume_stage:
+            logger.info(f"  Specific stage: {args.resume_stage}")
+        else:
+            logger.info("  Latest stage will be used")
+    
     if args.save_checkpoint:
         logger.info(f"Will save checkpoint as: {args.save_checkpoint}")
     logger.info(f"Checkpoint interval: {CHECKPOINT_INTERVAL} tasks")
@@ -546,18 +640,39 @@ def main():
     stages_total = max(1, int(getattr(args, 'stages', 1)))
     logger.info(f"Stages requested: {stages_total}")
 
-    # Resume support (legacy single-file checkpoint)
+    # Resume support (both legacy and new stage-based checkpoints)
     cumulative_results: dict[str, Union[bool, str]] = {}
+    resume_run_id = None
+    
     if args.checkpoint:
+        # Legacy checkpoint format
         checkpoint_data = load_checkpoint(args.checkpoint)
         if checkpoint_data:
             cumulative_results = checkpoint_data.get('results', {})
-            logger.info(f"Loaded previous results from checkpoint '{args.checkpoint}'.")
+            logger.info(f"Loaded previous results from legacy checkpoint '{args.checkpoint}'.")
         else:
-            logger.warning(f"Failed to load checkpoint '{args.checkpoint}', starting fresh.")
+            logger.warning(f"Failed to load legacy checkpoint '{args.checkpoint}', starting fresh.")
+    elif args.resume_run:
+        # New stage-based checkpoint format
+        checkpoint_data = load_stage_checkpoint(args.resume_run, args.resume_stage)
+        if checkpoint_data:
+            cumulative_results = checkpoint_data.get('results_cumulative', {})
+            resume_run_id = checkpoint_data.get('run_id', args.resume_run)
+            logger.info(f"Loaded previous results from stage checkpoint run '{args.resume_run}'.")
+            logger.info(f"  Loaded {len(cumulative_results)} previous results")
+            logger.info(f"  Solved so far: {sum(1 for v in cumulative_results.values() if v is True)}")
+        else:
+            logger.warning(f"Failed to load stage checkpoint run '{args.resume_run}', starting fresh.")
 
     # Run identifier (timestamp) for this multi-stage run
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # If resuming from a stage checkpoint, use the existing run_id, otherwise create new
+    if resume_run_id:
+        run_id = resume_run_id
+        logger.info(f"Continuing existing run: {run_id}")
+    else:
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        logger.info(f"Starting new run: {run_id}")
+    
     insufficient_credits = False
 
     # Stage loop
