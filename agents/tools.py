@@ -466,12 +466,14 @@ class BatchMoogleSemanticSearch(Tool):
         "max_per_query": {
             "type": "integer",
             "description": "Maximum number of items to keep per query (default 5).",
-            "default": 5
+            "default": 5,
+            "nullable": True
         },
         "max_batches_global": {
             "type": "integer",
             "description": "Maximum allowed calls per theorem_key (default 2).",
-            "default": 2
+            "default": 2,
+            "nullable": True
         }
     }
     output_type = "object"
