@@ -5,7 +5,7 @@ import subprocess
 import time
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 import requests
 import brotli
 import json
@@ -431,8 +431,156 @@ class MoogleSemanticSearch(Tool):
             logger.error(f"[MoogleSemanticSearch] Request error: {e}")
             return {"error": str(e)}
 
+
+class BatchMoogleSemanticSearch(Tool):
+    """
+    Batched semantic search over moogle.ai.
+
+    Accepts multiple query strings at once and returns grouped, size-limited results
+    to minimize the number of search tool invocations (token- and step-efficient).
+
+    Inputs:
+      - theorem_key: str — stable key for this theorem (e.g., theorem name), used for budget tracking
+      - queries: list[str]  — a small batch of rephrasings/abstractions of the same goal
+      - max_per_query: int (optional, default 5) — cap for results per query to reduce noise
+      - max_batches_global: int (optional, default 2) — hard cap on number of times this tool can be called per theorem_key
+
+    Output:
+      - { "results": { query: [ items... ] }, "total_items": int }
+    """
+    name = "batch_semantic_search"
+    description = (
+        "Runs a single batched semantic search request against moogle.ai for multiple queries. "
+        "Returns grouped results per input query. Always prefer this over multiple single-query calls."
+    )
+    inputs = {
+        "theorem_key": {
+            "type": "string",
+            "description": "Stable identifier for this theorem (budgeted per key)."
+        },
+        "queries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Batch of related search queries (rephrasings, equivalent forms)."
+        },
+        "max_per_query": {
+            "type": "integer",
+            "description": "Maximum number of items to keep per query (default 5).",
+            "default": 5
+        },
+        "max_batches_global": {
+            "type": "integer",
+            "description": "Maximum allowed calls per theorem_key (default 2).",
+            "default": 2
+        }
+    }
+    output_type = "object"
+
+    # Global in-memory budget tracker and naive per-query cache
+    _budget_usage: Dict[str, int] = {}
+    _cache: Dict[str, list] = {}
+
+    def _single_search(self, query: str) -> dict:
+        # Reuse the single-search logic directly to avoid code duplication
+        # (copy of MoogleSemanticSearch.forward body with minor adjustments)
+        logger.info(f"[BatchMoogleSemanticSearch] Single semantic search for: '{query}'")
+        url = 'https://www.moogle.ai/api/search'
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Referer': 'https://www.moogle.ai/search/raw?q=cursor',
+            'Content-Type': 'application/json',
+            'Origin': 'https://www.moogle.ai',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'DNT': '1',
+            'Sec-GPC': '1',
+            'Priority': 'u=4',
+        }
+        data = [{"isFind": False, "contents": query}]
+        try:
+            logger.info("[BatchMoogleSemanticSearch] POST moogle.ai API")
+            resp = requests.post(url, headers=headers, json=data)
+            resp.raise_for_status()
+            encoding = resp.headers.get('content-encoding', '').lower()
+            raw = resp.content
+            text = None
+            if 'br' in encoding:
+                try:
+                    raw = brotli.decompress(raw)
+                    text = raw.decode('utf-8')
+                    logger.info("[BatchMoogleSemanticSearch] Brotli decoding successful.")
+                except Exception as e:
+                    logger.error(f"[BatchMoogleSemanticSearch] Brotli decode error: {e}")
+                    try:
+                        text = resp.text
+                    except Exception as e2:
+                        logger.error(f"[BatchMoogleSemanticSearch] Error getting resp.text: {e2}")
+                        text = None
+            else:
+                text = resp.text
+            if text is not None:
+                try:
+                    resp_json = json.loads(text)
+                    allowed = {"declarationName", "declarationCode", "declarationDocstring", "declarationType", "sourceCodeUrl", "mathlibPath"}
+                    if 'data' in resp_json and isinstance(resp_json['data'], list):
+                        for i, item in enumerate(resp_json['data']):
+                            if isinstance(item, dict):
+                                resp_json['data'][i] = {k: v for k, v in item.items() if k in allowed}
+                    logger.info(f"[BatchMoogleSemanticSearch] Parsed response. Items={len(resp_json.get('data', []))}")
+                    return resp_json
+                except Exception as e:
+                    logger.error(f"[BatchMoogleSemanticSearch] JSON parse error: {e}")
+                    return {"error": f"JSON parse error: {e}", "raw": text}
+            else:
+                logger.error("[BatchMoogleSemanticSearch] No text response to parse.")
+                return {"error": "No text response to parse."}
+        except Exception as e:
+            logger.error(f"[BatchMoogleSemanticSearch] Request error: {e}")
+            return {"error": str(e)}
+
+    def forward(self, theorem_key: str, queries: List[str], max_per_query: int = 5, max_batches_global: int = 2) -> dict:
+        logger.info(f"[BatchMoogleSemanticSearch] Starting batched search. Theorem={theorem_key}, Queries={len(queries)}, max_per_query={max_per_query}, max_batches_global={max_batches_global}")
+        if not isinstance(queries, list) or not queries or not isinstance(theorem_key, str) or not theorem_key:
+            return {"results": {}, "total_items": 0}
+
+        # Hard safety cap of 2 regardless of what the caller requests
+        effective_cap = min(max_batches_global, 2)
+        used = self._budget_usage.get(theorem_key, 0)
+        if used >= effective_cap:
+            logger.warning(f"[BatchMoogleSemanticSearch] Budget exhausted for theorem_key='{theorem_key}' (used={used} ≥ cap={max_batches_global})")
+            return {"results": {}, "total_items": 0, "warning": "search_budget_exhausted"}
+
+        grouped: Dict[str, list] = {}
+        total_items = 0
+        for q in queries:
+            # Cache lookup
+            if q in self._cache:
+                items = list(self._cache[q])
+                logger.info(f"[BatchMoogleSemanticSearch] Cache hit for query '{q}' -> {len(items)} items")
+            else:
+                res = self._single_search(q)
+                items = res.get('data', []) if isinstance(res, dict) else []
+                # cache raw list (untrimmed) to allow different max_per_query later
+                self._cache[q] = list(items)
+            if isinstance(items, list) and max_per_query > 0:
+                items = items[:max_per_query]
+            grouped[q] = items
+            total_items += len(items)
+        # Update budget
+        self._budget_usage[theorem_key] = used + 1
+        logger.info(f"[BatchMoogleSemanticSearch] Finished batched search. Total kept items={total_items}. Budget now used={self._budget_usage[theorem_key]}/{effective_cap}")
+        return {"results": grouped, "total_items": total_items}
+
 # Create an instance of the tool
 verify_lean_proof = VerifyLeanProof()
 
 # Register the tool instance
 moogle_semantic_search = MoogleSemanticSearch()
+
+# Batched search instance (preferred to reduce steps/tokens)
+batch_semantic_search = BatchMoogleSemanticSearch()

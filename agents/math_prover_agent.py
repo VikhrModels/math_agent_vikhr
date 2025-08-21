@@ -22,7 +22,7 @@ from config import (
     DEFAULT_CONCURRENCY,
     validate_config, validate_provider_credentials,
 )
-from agents.tools import verify_lean_proof, moogle_semantic_search
+from agents.tools import verify_lean_proof, batch_semantic_search
 
 # --- Logging setup ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,6 +36,64 @@ logging.basicConfig(
     force=True  # Force reconfiguration even if already configured
 )
 logger = logging.getLogger(__name__)
+# --- Lightweight difficulty estimator & budget router ---
+def estimate_difficulty(statement: str) -> float:
+    """
+    Heuristic difficulty score s in [0, 1] based on static features of the Lean statement.
+    We avoid expensive probing here to conserve steps; focus on structural cues.
+    """
+    s = 0.0
+    text = (statement or "").lower()
+    # Quantifiers and heavy domains
+    hard_markers = [
+        '∀', 'exists', '∃', 'topological', 'measure', 'integral', 'filter', 'lim', 'converge',
+        'matrix', 'linear', 'bounded', 'compact', 'continuous', 'differentiable', 'normed', 'complex', 'ℂ',
+        'real.sqrt', 'nat.find', 'finset', 'fintype', 'subtype', 'quotient', 'card', 'polynomial', 'ring_hom',
+        'group', 'subgroup', 'order', 'sup', 'inf', 'supremum', 'infimum', '⊥', '⊤'
+    ]
+    medium_markers = [
+        'nat', 'int', 'ℕ', 'ℤ', 'ℝ', 'iff', '↔', '≤', '<', '≥', '≥', 'mod', 'dvd', '^', 'pow', 'sum', '∑',
+        'prod', '∏', 'cases', 'by_cases', 'induction', 'det', 'rank', 'basis'
+    ]
+    easy_markers = ['simp', 'norm_num', 'linarith', 'ring', 'tauto']
+
+    # length / tokens proxy
+    length_factor = min(len(text) / 600.0, 1.0)  # cap at long statements
+    s += 0.2 * length_factor
+
+    s += 0.05 * sum(1 for m in easy_markers if m in text)  # slightly easier if tactics are hinted
+    s += 0.15 * sum(1 for m in medium_markers if m in text)
+    s += 0.25 * sum(1 for m in hard_markers if m in text)
+
+    # normalize to [0,1]
+    return max(0.0, min(1.0, s))
+
+
+def select_budgets(score: float) -> dict:
+    """Map difficulty score to mode and concrete budgets for search and code attempts."""
+    if score <= 0.3:
+        return {
+            'mode': 'fast_path',
+            'global_search_batches': 0,
+            'max_per_query': 5,
+            'code_candidates_per_lemma': 2,
+            'max_code_compiles_per_lemma': 2,
+        }
+    if score <= 0.6:
+        return {
+            'mode': 'micro_plan',
+            'global_search_batches': 1,
+            'max_per_query': 6,
+            'code_candidates_per_lemma': 3,
+            'max_code_compiles_per_lemma': 3,
+        }
+    return {
+        'mode': 'full_pipeline',
+        'global_search_batches': 2,  # tool also enforces a hard cap of 2
+        'max_per_query': 8,
+        'code_candidates_per_lemma': 4,
+        'max_code_compiles_per_lemma': 3,
+    }
 
 # --- Checkpoint configuration ---
 CHECKPOINT_DIR = TMP_DIR / "checkpoints"
@@ -297,17 +355,16 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
 
     # --- Search Agent ---------------------------------------------------
     search_agent = CodeAgent(
-        tools=[moogle_semantic_search],
+        tools=[batch_semantic_search],
         model=model,
-        max_steps=6,
+        max_steps=1,  # All queries must be batched in one step
         planning_interval=1,
         name="search_agent",
         description=(
-            "You are a semantic search specialist for Lean proofs. "
-            "Given a goal and its context you issue PARALLEL queries to the `moogle_semantic_search` tool in a single "
-            "Python code block, aggregate and return the most useful mathlib facts together with short hints on how "
-            "they might be applied (rw/apply/simp/etc.). "
-            "Batch all queries; never run them one by one in distinct steps."
+            "Semantic search specialist for Lean proofs. In a SINGLE Python code block, call `batch_semantic_search` "
+            "with: theorem_key (string), a list of 4–6 rephrasings/equivalent formulations, and max_per_query. "
+            "Return facts grouped by intended use (rw/simp/apply/induction/instances) and include a 1–2 line hint per fact. "
+            "Never call search sequentially; strictly batch in one step. Respect a global cap on batches per theorem."
         ),
     )
 
@@ -315,32 +372,30 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
     code_agent = CodeAgent(
         tools=[verify_lean_proof],
         model=model,
-        max_steps=10,
+        max_steps=7,
         planning_interval=1,
         name="code_agent",
         description=(
-            "Generates Lean-4 code skeletons and iteratively replaces `sorry` with real proofs. "
-            "In a single iteration it may prepare SEVERAL alternative proofs for the current lemma and verify them via "
-            "`verify_lean_proof`, choosing the best compiling version. "
-            "NEVER write Python for mathematical reasoning — only Lean. Always include `import MiniF2F.Minif2fImport` "
-            "at the top and ensure the final file contains NO `sorry`."
+            "Generates Lean-4 code skeletons and iteratively replaces `sorry` with real proofs. In a single iteration, "
+            "prepare SEVERAL (budgeted) alternative proofs for the current lemma and verify each via `verify_lean_proof`; "
+            "keep the first compiling, robust variant (few subgoals, no timeouts). Perform a sanitation pass before finalizing: "
+            "simplify tactics, clean imports, prefer lighter equivalents, localize simp sets. Output Lean only; final file must contain NO `sorry`."
         ),
     )
 
     # --- Planner / Orchestrator ----------------------------------------
     planner_agent = CodeAgent(
-        tools=[verify_lean_proof, moogle_semantic_search],  # quick fast-path compilations
+        tools=[verify_lean_proof, batch_semantic_search],  # quick fast-path compilations and rare search
         managed_agents=[search_agent, code_agent],
         model=model,
         max_steps=max_steps,
         planning_interval=planning_interval,
         name="planner_agent",
         description=(
-            "Top-down planner that decomposes a theorem into lemma stubs, assigns difficulty + criticality, "
-            "and orchestrates proof construction. It decides when to call `search_agent` for facts or `code_agent` "
-            "for Lean code, manages token budgets, and revises the plan when Lean feedback suggests better "
-            "formulations. Fast-path easy goals by directly generating small Lean snippets and compiling them via "
-            "`verify_lean_proof`."
+            "Top-down planner: build a DAG plan of lemma stubs, assign <complexity, criticality>, manage budgets, "
+            "and orchestrate code/search agents. Use fast-path for easy goals; otherwise, full pipeline. Re-plan when "
+            "Lean feedback indicates better formulations (type/instance issues, tactic stalls). Search is allowed only "
+            "as a single batched call via `batch_semantic_search` and is globally budgeted per theorem."
         ),
     )
 
@@ -363,62 +418,37 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
     logger.info(f"Agent limit: max_steps={max_steps}")
 
     try:
-        # --- Rewritten planner-centric prompt ---
+        # --- Planner-centric prompt with global plan and strict budgets ---
+        s = estimate_difficulty(theorem['statement'])
+        budgets = select_budgets(s)
+        mode = budgets['mode']
+
         prompt = f"""SYSTEM OVERVIEW:
-You control a TEAM of specialised agents that solve Lean theorems via a top-down → bottom-up pipeline:
-  • planner_agent  (you) — decomposes the goal into lemma stubs, assigns difficulty/criticality and orchestrates.
-  • search_agent   — batches semantic searches with moogle_semantic_search and returns curated facts + hints.
-  • code_agent     — writes Lean-4 code: first a skeleton with `sorry`, then iteratively replaces `sorry` with proofs,
-                     trying SEVERAL variants per iteration and keeping the first compiling proof.
-  • verify_lean_proof — Lean compiler wrapper, the single source of truth.
+You control a TEAM that proves Lean theorems with a top-down → bottom-up process grounded in the Lean compiler.
+Use fast-path for easy goals; otherwise, plan → skeleton → iterative closure. Search is rare, strictly batched, and globally budgeted.
 
-IMPORTANT: FOCUS ON CODE GENERATION FIRST, not search. Only use search_agent when you have a specific fact you need.
-Most theorems can be solved with standard Lean tactics and mathematical reasoning.
+WORKFLOW:
+  1) Normalize goal (canonical forms, equivalences).
+  2) Build a DAG of lemma stubs with <complexity, criticality>, limit recursion depth to 3; keep single-use facts as local `have`.
+  3) Generate a Lean skeleton (imports + main theorem + stubs) and ensure it compiles; if Lean complains, revise stubs immediately.
+  4) While `sorry` remain: pick high-priority lemma; attempt cheap tactics first; only if needed, call ONE batched semantic search; have code_agent produce ≤ {budgets['code_candidates_per_lemma']} candidates and keep the first compiling, robust one; re-plan on persistent type/instance/timeouts.
 
-WORKFLOW (high-level):
-  1. NORMALISE the theorem (simplify quantifiers, bring into canonical forms).
-  2. BUILD a DAG of lemma stubs (no proofs) with <complexity, criticality>. Limit recursion depth to 3.
-  3. Generate a Lean skeleton (imports + main theorem + lemma stubs). Ensure it compiles.
-  4. LOOP while there are `sorry`:
-     a. pick the highest-priority lemma (critical × moderate complexity).
-     b. attempt cheap tactics first (simp/rw/norm_num etc). If solved ⇒ substitute and recompile.
-     c. if needed, call search_agent ONCE with a batch of re-phrased queries. Integrate returned facts.
-     d. ask code_agent to produce ≤3 candidate proofs using gathered facts. Accept the first compiling one.
-     e. if Lean feedback shows type mismatch / missing instances / timeout ⇒ revise stub or split it.
-  5. When no `sorry` remain, return the full Lean code as FINAL_ANSWER.
+GLOBAL BUDGETS (per theorem):
+  - Planner steps ≤ {max_steps}
+  - Search batches (global) ≤ {budgets['global_search_batches']} (hard-capped by tool)
+  - Facts per query ≤ {budgets['max_per_query']}
+  - Code candidates per lemma ≤ {budgets['code_candidates_per_lemma']}
+  - Compilations per lemma ≤ {budgets['max_code_compiles_per_lemma']}
 
-BUDGETS: planner iterations ≤ {max_steps}; code_agent iterations per lemma ≤ 7; search_agent refinements ≤ 3.
+MODE for this theorem: {mode} (difficulty score s={s:.2f}).
 
-FAST-PATH: if the current goal is recognised as "easy" (single tactic likely) you may bypass sub-agents: craft a
-small Lean snippet yourself and verify via verify_lean_proof directly.
-
-SEMAPHORES: Always batch queries to search_agent, never sequential single queries. Do not request Python maths.
-All Lean code MUST import MiniF2F.Minif2fImport and contain no `sorry` at termination.
-
-FEW-SHOT EXAMPLES:
-
-EXAMPLE 1 (Medium complexity - algebraic manipulation):
-Theorem: mathd_algebra_116 (k x : ℝ) (h₀ : x = (13 - Real.sqrt 131) / 4) (h₁ : 2 * x ^ 2 - 13 * x + k = 0) : k = 19 / 4
-Solution approach: Substitute h₀ into h₁, solve for k using algebra and norm_num.
-
-EXAMPLE 2 (Hard complexity - number theory with induction):
-Theorem: induction_sum2kp1npqsqm1 (n : ℕ) : ∑ k ∈ Finset.range n, (2 * k + 3) = (n + 1) ^ 2 - 1
-Solution approach: Use mathematical induction, base case n=0, inductive step with sum manipulation.
-
-EXAMPLE 3 (Hard complexity - complex analysis):
-Theorem: amc12a_2019_p21 (z : ℂ) (h₀ : z = (1 + Complex.I) / Real.sqrt 2) : ((∑ k ∈ Finset.Icc 1 12, z ^ k ^ 2) * (∑ k ∈ Finset.Icc 1 12, 1 / z ^ k ^ 2)) = 36
-Solution approach: Use properties of complex numbers, geometric series, and power reduction.
-
-EXAMPLE 4 (Medium complexity - function analysis):
-Theorem: amc12_2000_p9 (f : ℝ → ℝ) (h₀ : ∀ x > 0, ∀ y > 0, f (x * y) = f x / y) (h₁ : f 500 = 3) : f 600 = 5 / 2
-Solution approach: Use functional equation to find f(x) = c/x, solve for constant c.
+CONSTRAINTS: Always import MiniF2F.Minif2fImport; write only Lean; batch search queries; no sequential single-search calls; keep search under the global cap.
 
 TASK — prove the following theorem:
 
 {theorem['statement']}
 
-First: classify overall difficulty (easy / medium / hard) and outline the DAG plan (list lemma names + one-line goal).
-Focus on generating Lean code directly rather than searching for facts."""
+First: state overall difficulty (easy/medium/hard) and a concise DAG plan (lemma names + one-line goals). Then proceed with the pipeline and return final Lean code without `sorry`."""
 
         # Count tokens for the prompt
         if enc is not None and token_counter is not None:
