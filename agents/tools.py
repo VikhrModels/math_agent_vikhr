@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, List
 import requests
+from opentelemetry import trace
 import brotli
 import json
 from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
@@ -31,6 +32,7 @@ logging.basicConfig(
     force=True  # Force reconfiguration even if already configured
 )
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("math_prover.tools")
 
 # ---------------------------------------------------------------------------
 # LeanVerifier helper (adapted from verify_task.py)
@@ -101,47 +103,61 @@ class LeanVerifier:
         """
         label_str = label or "anonymous"
         logger.info(f"[LeanVerifier] Verifying Lean snippet '{label_str}' (length={len(lean_code)} chars)")
+        with tracer.start_as_current_span(
+            "lean_verify",
+            attributes={
+                "lean.label": label_str,
+                "lean.length": len(lean_code),
+                "lean.project_root": str(self.project_root),
+            },
+        ):
+            # Ensure required import is present
+            if "MiniF2F.Minif2fImport" not in lean_code:
+                lean_code = "import MiniF2F.Minif2fImport\n\n" + lean_code.lstrip()
 
-        # Ensure required import is present
-        if "MiniF2F.Minif2fImport" not in lean_code:
-            lean_code = "import MiniF2F.Minif2fImport\n\n" + lean_code.lstrip()
+            # Write to temporary file in project root
+            tmp_file = tempfile.NamedTemporaryFile("w", suffix=".lean", dir=self.project_root, delete=False, encoding="utf-8")
+            try:
+                tmp_file.write(lean_code)
+                tmp_file.flush()
+                tmp_path = Path(tmp_file.name)
+            finally:
+                tmp_file.close()
 
-        # Write to temporary file in project root
-        tmp_file = tempfile.NamedTemporaryFile("w", suffix=".lean", dir=self.project_root, delete=False, encoding="utf-8")
-        try:
-            tmp_file.write(lean_code)
-            tmp_file.flush()
-            tmp_path = Path(tmp_file.name)
-        finally:
-            tmp_file.close()
+            # Call Lean compiler via Lake
+            cmd = [self.lake_binary, "env", "lean", str(tmp_path)]
+            logger.info(f"[LeanVerifier] Running command: {' '.join(cmd)}  (cwd={self.project_root})")
+            try:
+                with tracer.start_as_current_span(
+                    "lean_compile",
+                    attributes={
+                        "cmd": " ".join(cmd),
+                        "timeout": self.timeout,
+                    },
+                ):
+                    proc = subprocess.run(cmd, cwd=self.project_root, capture_output=True, text=True, timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                logger.error("[LeanVerifier] Lean compilation timed-out")
+                tmp_path.unlink(missing_ok=True)
+                return {"success": False, "output": "Lean compilation timed-out", "exit_code": -1}
 
-        # Call Lean compiler via Lake
-        cmd = [self.lake_binary, "env", "lean", str(tmp_path)]
-        logger.info(f"[LeanVerifier] Running command: {' '.join(cmd)}  (cwd={self.project_root})")
-        try:
-            proc = subprocess.run(cmd, cwd=self.project_root, capture_output=True, text=True, timeout=self.timeout)
-        except subprocess.TimeoutExpired:
-            logger.error("[LeanVerifier] Lean compilation timed-out")
+            stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
+            output_combined = (stdout or "") + (stderr or "")
+
+            # Clean compiler paths to reduce noise
+            clean_output = self._clean_output(output_combined, str(tmp_path))
+
+            # Remove temporary file
             tmp_path.unlink(missing_ok=True)
-            return {"success": False, "output": "Lean compilation timed-out", "exit_code": -1}
 
-        stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
-        output_combined = (stdout or "") + (stderr or "")
+            success = exit_code == 0
+            logger.info(f"[LeanVerifier] Compilation finished – success={success}, exit_code={exit_code}")
 
-        # Clean compiler paths to reduce noise
-        clean_output = self._clean_output(output_combined, str(tmp_path))
-
-        # Remove temporary file
-        tmp_path.unlink(missing_ok=True)
-
-        success = exit_code == 0
-        logger.info(f"[LeanVerifier] Compilation finished – success={success}, exit_code={exit_code}")
-
-        return {
-            "success": success,
-            "exit_code": exit_code,
-            "output": clean_output,
-        }
+            return {
+                "success": success,
+                "exit_code": exit_code,
+                "output": clean_output,
+            }
 
     # -----------------------------------------------------------------------
     # Internals
@@ -390,7 +406,14 @@ class MoogleSemanticSearch(Tool):
         data = [{"isFind": False, "contents": query}]
         try:
             logger.info("[MoogleSemanticSearch] Sending POST request to moogle.ai API...")
-            resp = requests.post(url, headers=headers, json=data)
+            with tracer.start_as_current_span(
+                "semantic_search",
+                attributes={
+                    "provider": "moogle.ai",
+                    "query.length": len(query),
+                },
+            ):
+                resp = requests.post(url, headers=headers, json=data)
             resp.raise_for_status()
             encoding = resp.headers.get('content-encoding', '').lower()
             raw = resp.content
@@ -442,8 +465,8 @@ class BatchMoogleSemanticSearch(Tool):
     Inputs:
       - theorem_key: str — stable key for this theorem (e.g., theorem name), used for budget tracking
       - queries: list[str]  — a small batch of rephrasings/abstractions of the same goal
-      - max_per_query: int (optional, default 5) — cap for results per query to reduce noise
-      - max_batches_global: int (optional, default 2) — hard cap on number of times this tool can be called per theorem_key
+      - max_per_query: int (optional, default 10) — cap for results per query to reduce noise
+      - max_batches_global: int (optional, default 4) — cap on number of times this tool can be called per theorem_key
 
     Output:
       - { "results": { query: [ items... ] }, "total_items": int }
@@ -465,14 +488,14 @@ class BatchMoogleSemanticSearch(Tool):
         },
         "max_per_query": {
             "type": "integer",
-            "description": "Maximum number of items to keep per query (default 5).",
-            "default": 5,
+            "description": "Maximum number of items to keep per query (default 10).",
+            "default": 10,
             "nullable": True
         },
         "max_batches_global": {
             "type": "integer",
-            "description": "Maximum allowed calls per theorem_key (default 2).",
-            "default": 2,
+            "description": "Maximum allowed calls per theorem_key (default 4).",
+            "default": 4,
             "nullable": True
         }
     }
@@ -506,7 +529,14 @@ class BatchMoogleSemanticSearch(Tool):
         data = [{"isFind": False, "contents": query}]
         try:
             logger.info("[BatchMoogleSemanticSearch] POST moogle.ai API")
-            resp = requests.post(url, headers=headers, json=data)
+            with tracer.start_as_current_span(
+                "semantic_search.batch",
+                attributes={
+                    "provider": "moogle.ai",
+                    "query.length": len(query),
+                },
+            ):
+                resp = requests.post(url, headers=headers, json=data)
             resp.raise_for_status()
             encoding = resp.headers.get('content-encoding', '').lower()
             raw = resp.content
@@ -545,13 +575,13 @@ class BatchMoogleSemanticSearch(Tool):
             logger.error(f"[BatchMoogleSemanticSearch] Request error: {e}")
             return {"error": str(e)}
 
-    def forward(self, theorem_key: str, queries: List[str], max_per_query: int = 5, max_batches_global: int = 2) -> dict:
+    def forward(self, theorem_key: str, queries: List[str], max_per_query: int = 10, max_batches_global: int = 4) -> dict:
         logger.info(f"[BatchMoogleSemanticSearch] Starting batched search. Theorem={theorem_key}, Queries={len(queries)}, max_per_query={max_per_query}, max_batches_global={max_batches_global}")
         if not isinstance(queries, list) or not queries or not isinstance(theorem_key, str) or not theorem_key:
             return {"results": {}, "total_items": 0}
 
-        # Hard safety cap of 2 regardless of what the caller requests
-        effective_cap = min(max_batches_global, 2)
+        # Hard safety cap of 5 regardless of what the caller requests
+        effective_cap = min(max_batches_global, 5)
         used = self._budget_usage.get(theorem_key, 0)
         if used >= effective_cap:
             logger.warning(f"[BatchMoogleSemanticSearch] Budget exhausted for theorem_key='{theorem_key}' (used={used} ≥ cap={max_batches_global})")

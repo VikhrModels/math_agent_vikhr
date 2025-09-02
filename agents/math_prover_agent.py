@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 import random
 import logging
@@ -7,6 +8,7 @@ from pathlib import Path
 from datetime import datetime
 import tiktoken
 from typing import Union, Optional
+import threading
 import concurrent.futures
 
 # Add the parent directory to Python path to import config
@@ -14,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import CodeAgent, OpenAIServerModel
 from config import (
-    DEFAULT_MODEL, AVAILABLE_MODELS,
+    DEFAULT_MODEL,
     OPENROUTER_API_BASE, OPENROUTER_API_KEY,
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
     DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL,
@@ -23,6 +25,7 @@ from config import (
     validate_config, validate_provider_credentials,
 )
 from agents.tools import verify_lean_proof, batch_semantic_search
+from opentelemetry import trace
 
 # --- Logging setup ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,6 +39,7 @@ logging.basicConfig(
     force=True  # Force reconfiguration even if already configured
 )
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("math_prover")
 # --- Lightweight difficulty estimator & budget router ---
 def estimate_difficulty(statement: str) -> float:
     """
@@ -74,23 +78,23 @@ def select_budgets(score: float) -> dict:
     if score <= 0.3:
         return {
             'mode': 'fast_path',
-            'global_search_batches': 0,
-            'max_per_query': 5,
+            'global_search_batches': 1,
+            'max_per_query': 8,
             'code_candidates_per_lemma': 2,
             'max_code_compiles_per_lemma': 2,
         }
     if score <= 0.6:
         return {
             'mode': 'micro_plan',
-            'global_search_batches': 1,
-            'max_per_query': 6,
+            'global_search_batches': 2,
+            'max_per_query': 10,
             'code_candidates_per_lemma': 3,
             'max_code_compiles_per_lemma': 3,
         }
     return {
         'mode': 'full_pipeline',
-        'global_search_batches': 2,  # tool also enforces a hard cap of 2
-        'max_per_query': 8,
+        'global_search_batches': 4,  # tool enforces hard cap internally
+        'max_per_query': 12,
         'code_candidates_per_lemma': 4,
         'max_code_compiles_per_lemma': 3,
     }
@@ -346,11 +350,13 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
     api_base = OPENROUTER_API_BASE
     api_key = OPENROUTER_API_KEY
 
+    # Set OPENAI_API_KEY environment variable for smolagents compatibility
+    os.environ['OPENAI_API_KEY'] = api_key
+
     # Shared model across sub-agents (cheaper & coherent)
     model = OpenAIServerModel(
         model_id=model_id,
         api_base=api_base,
-        api_key=api_key,
     )
 
     # --- Search Agent ---------------------------------------------------
@@ -362,9 +368,9 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
         name="search_agent",
         description=(
             "Semantic search specialist for Lean proofs. In a SINGLE Python code block, call `batch_semantic_search` "
-            "with: theorem_key (string), a list of 4–6 rephrasings/equivalent formulations, and max_per_query. "
-            "Return facts grouped by intended use (rw/simp/apply/induction/instances) and include a 1–2 line hint per fact. "
-            "Never call search sequentially; strictly batch in one step. Respect a global cap on batches per theorem."
+            "with: theorem_key (string), a list of 6–10 rephrasings/equivalent formulations, and max_per_query (8–12). "
+            "Return facts grouped by intended use (rw/simp/apply/induction/instances) and include 1–2 line hints per fact. "
+            "Never call search sequentially; strictly batch in one step. Respect the global per-theorem cap (up to 4–5 batches)."
         ),
     )
 
@@ -418,6 +424,12 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
     logger.info(f"Agent limit: max_steps={max_steps}")
 
     try:
+        span_attributes = {
+            "theorem.name": theorem.get('name'),
+            "agent.max_steps": max_steps,
+        }
+        span_ctx = tracer.start_as_current_span("prove_theorem", attributes=span_attributes)
+        span_ctx.__enter__()
         # --- Planner-centric prompt with global plan and strict budgets ---
         s = estimate_difficulty(theorem['statement'])
         budgets = select_budgets(s)
@@ -516,6 +528,11 @@ First: state overall difficulty (easy/medium/hard) and a concise DAG plan (lemma
             return "INSUFFICIENT_CREDITS"
         
         return False
+    finally:
+        try:
+            span_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
 
 def process_theorem_task(theorem: dict,
                          max_steps: int,
@@ -565,7 +582,7 @@ def main():
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"Number of theorems to process in parallel (default: {DEFAULT_CONCURRENCY}).")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
-                        help=f"Model to use (default: {DEFAULT_MODEL}). Available: {', '.join(AVAILABLE_MODELS)}")
+                        help=f"Model to use for theorem proving (e.g., 'openai/gpt-4o'). Defaults to '{DEFAULT_MODEL}'.")
     # Provider is fixed to OpenRouter; CLI option removed
     
     # Checkpoint arguments
@@ -587,9 +604,9 @@ def main():
     args = parser.parse_args()
 
     # Validate model selection
-    if args.model not in AVAILABLE_MODELS:
-        logger.error(f"Invalid model '{args.model}'. Available models: {', '.join(AVAILABLE_MODELS)}")
-        return
+    # if args.model not in AVAILABLE_MODELS:
+    #     logger.error(f"Invalid model '{args.model}'. Available models: {', '.join(AVAILABLE_MODELS)}")
+    #     return
 
     # --- tiktoken setup ---
     try:
@@ -609,6 +626,22 @@ def main():
     SELECTED_PROVIDER = "openrouter"
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
+
+    # --- Telemetry (Phoenix + OTel) ---
+    try:
+        from phoenix.otel import register
+        from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+        
+        # Simple Phoenix registration
+        project_name = os.getenv("PHOENIX_PROJECT_NAME", "math_agent_vikhr")
+        
+        tracer_provider = register(project_name=project_name)
+        SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
+        
+        logger.info(f"Phoenix telemetry initialized for project: {project_name}")
+            
+    except Exception as e:
+        logger.warning(f"Telemetry initialization failed (continuing without tracing): {e}")
 
     # Handle checkpoint listing
     if args.list_checkpoints:
@@ -708,6 +741,18 @@ def main():
     # Stage loop
     current_tasks = micro_subset
     for stage_index in range(1, stages_total + 1):
+        stage_span = tracer.start_as_current_span(
+            "stage",
+            attributes={
+                "run.id": run_id,
+                "stage.index": stage_index,
+                "stages.total": stages_total,
+                "concurrency": CONCURRENCY,
+                "model.id": SELECTED_MODEL,
+                "provider": SELECTED_PROVIDER,
+            },
+        )
+        stage_span.__enter__()
         if stage_index == 1:
             tasks_this_stage = current_tasks
         else:
@@ -791,7 +836,9 @@ def main():
             )
 
         if insufficient_credits:
+            stage_span.__exit__(None, None, None)
             break
+        stage_span.__exit__(None, None, None)
 
     # Final reporting
     logger.info("\n--- Summary of Results (Cumulative) ---")

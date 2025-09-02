@@ -29,11 +29,6 @@ AVAILABLE_PROVIDERS = ["openrouter", "openai"]
 
 # --- Model Configuration ---
 DEFAULT_MODEL = "anthropic/claude-sonnet-4"
-AVAILABLE_MODELS = [
-    "anthropic/claude-sonnet-4",
-    "google/gemini-2.5-pro",
-    "openai/gpt-4.1",
-]
 
 # --- Lean Configuration ---
 # In Lean 4 project, validation statements reside in `MiniF2F/Valid.lean`
@@ -111,7 +106,6 @@ __all__ = [
     "DEFAULT_PROVIDER",
     "AVAILABLE_PROVIDERS",
     "DEFAULT_MODEL",
-    "AVAILABLE_MODELS",
     "LEAN_SOURCE_FILE",
     "LEAN_OUTPUT_FILE",
     "LEAN_TIMEOUT",
