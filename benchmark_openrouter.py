@@ -36,7 +36,7 @@ def _message_text(message) -> str:
     return "\n".join(parts).strip()
 
 # Import configuration
-from config import (
+from configs.config_loader import (
     OPENROUTER_API_KEY,
     OPENROUTER_API_BASE,
     DEFAULT_MODEL,

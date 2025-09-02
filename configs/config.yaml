@@ -1,0 +1,84 @@
+# Конфигурационный файл для Math Agent Vikhr проекта
+# Содержит все настраиваемые параметры, которые могут изменяться между запусками
+
+# --- Пути проекта ---
+paths:
+  base_dir: "."
+  minif2f_dir: "miniF2F-lean4"
+  log_dir: "log"
+  tmp_dir: "tmp"
+
+# --- API конфигурация ---
+api:
+  # OpenRouter (прокси для многих провайдеров)
+  openrouter:
+    api_key: "${OPENROUTER_API_KEY}"
+    api_base: "https://openrouter.ai/api/v1"
+  
+  # OpenAI (прямой провайдер)
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    api_base: "https://api.openai.com/v1"
+  
+  # Выбор провайдера по умолчанию
+  default_provider: "${MATH_AGENT_PROVIDER:-openrouter}"
+  available_providers: ["openrouter", "openai"]
+
+# --- Конфигурация моделей ---
+models:
+  default: "anthropic/claude-sonnet-4"
+
+# --- Lean конфигурация ---
+lean:
+  # В Lean 4 проекте валидационные утверждения находятся в `MiniF2F/Valid.lean`
+  source_file: "miniF2F-lean4/MiniF2F/Valid.lean"
+  output_file: "valid.json"
+  timeout: 900  # секунды для компиляции Lean (увеличено с 30)
+
+# --- LLM/API таймауты ---
+llm:
+  # Таймаут HTTP запросов по умолчанию для вызовов LLM API (секунды)
+  request_timeout: "${LLM_REQUEST_TIMEOUT:-120}"
+
+# --- Конфигурация агента ---
+agent:
+  default_subset_size: "${MATH_AGENT_SUBSET_SIZE:-10}"
+  default_log_level: "INFO"
+  default_json_file: "valid.json"
+  
+  # Лимит шагов агента
+  max_steps: 10  # Максимальное количество шагов агента на теорему
+  
+  # Интервал планирования для агента (как часто запускать фазу планирования)
+  planning_interval: 1  # Запускать планирование каждые N шагов
+  
+  # Параллельность
+  concurrency: 4  # Количество теорем для параллельной обработки
+  
+  # Бюджеты для поиска и компиляции (зависят от сложности задачи)
+  budgets:
+    # Быстрый путь (сложность ≤ 0.3)
+    fast_path:
+      global_search_batches: 1
+      max_per_query: 8
+      code_candidates_per_lemma: 2
+      max_code_compiles_per_lemma: 2
+    
+    # Микро-планирование (сложность ≤ 0.6)
+    micro_plan:
+      global_search_batches: 2
+      max_per_query: 10
+      code_candidates_per_lemma: 3
+      max_code_compiles_per_lemma: 3
+    
+    # Полный пайплайн (сложность > 0.6)
+    full_pipeline:
+      global_search_batches: 4  # tool enforces hard cap internally
+      max_per_query: 12
+      code_candidates_per_lemma: 4
+      max_code_compiles_per_lemma: 3
+
+# --- Конфигурация логирования ---
+logging:
+  file: "llm_requests.log"
+  format: "%(asctime)s - %(levelname)s - %(message)s"

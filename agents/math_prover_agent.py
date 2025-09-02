@@ -15,7 +15,7 @@ import concurrent.futures
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import CodeAgent, OpenAIServerModel
-from config import (
+from configs.config_loader import (
     DEFAULT_MODEL,
     OPENROUTER_API_BASE, OPENROUTER_API_KEY,
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
@@ -23,6 +23,7 @@ from config import (
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
     DEFAULT_CONCURRENCY,
     validate_config, validate_provider_credentials,
+    AGENT_BUDGETS,
 )
 from agents.tools import verify_lean_proof, batch_semantic_search
 from opentelemetry import trace
@@ -78,25 +79,16 @@ def select_budgets(score: float) -> dict:
     if score <= 0.3:
         return {
             'mode': 'fast_path',
-            'global_search_batches': 1,
-            'max_per_query': 8,
-            'code_candidates_per_lemma': 2,
-            'max_code_compiles_per_lemma': 2,
+            **AGENT_BUDGETS['fast_path']
         }
     if score <= 0.6:
         return {
             'mode': 'micro_plan',
-            'global_search_batches': 2,
-            'max_per_query': 10,
-            'code_candidates_per_lemma': 3,
-            'max_code_compiles_per_lemma': 3,
+            **AGENT_BUDGETS['micro_plan']
         }
     return {
         'mode': 'full_pipeline',
-        'global_search_batches': 4,  # tool enforces hard cap internally
-        'max_per_query': 12,
-        'code_candidates_per_lemma': 4,
-        'max_code_compiles_per_lemma': 3,
+        **AGENT_BUDGETS['full_pipeline']
     }
 
 # --- Checkpoint configuration ---
@@ -594,8 +586,6 @@ def main():
                         help="Specific stage to resume from (used with --resume_run). If not specified, resumes from the latest stage.")
     parser.add_argument("--save_checkpoint", type=str, default=None,
                         help="Name for saving checkpoint (without .json extension).")
-    parser.add_argument("--checkpoint_interval", type=int, default=5,
-                        help="Save checkpoint every N processed tasks (default: 5).")
     parser.add_argument("--list_checkpoints", action="store_true",
                         help="List all available checkpoints and exit.")
     # Stages (multi-pass)
@@ -620,7 +610,6 @@ def main():
     VALID_JSON_PATH = args.json_file
     MAX_STEPS = args.max_steps
     PLANNING_INTERVAL = args.planning_interval
-    CHECKPOINT_INTERVAL = args.checkpoint_interval
     CONCURRENCY = args.concurrency
     SELECTED_MODEL = args.model
     SELECTED_PROVIDER = "openrouter"
@@ -673,7 +662,7 @@ def main():
     
     if args.save_checkpoint:
         logger.info(f"Will save checkpoint as: {args.save_checkpoint}")
-    logger.info(f"Checkpoint interval: {CHECKPOINT_INTERVAL} tasks")
+
     
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 

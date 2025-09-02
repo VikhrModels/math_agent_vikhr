@@ -10,7 +10,7 @@ import requests
 from opentelemetry import trace
 import brotli
 import json
-from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
+from configs.config_loader import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
 import tempfile
 import shutil
 
@@ -18,7 +18,7 @@ import shutil
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import Tool
-from config import MINIF2F_DIR, LEAN_TIMEOUT
+from configs.config_loader import MINIF2F_DIR, LEAN_TIMEOUT
 
 # Set up logging for the tool
 LOG_DIR.mkdir(parents=True, exist_ok=True)

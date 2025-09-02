@@ -33,7 +33,7 @@ def _extract_output_text(response) -> str:
     return "\n".join(chunks).strip()
 
 # Import configuration
-from config import (
+from configs.config_loader import (
     OPENAI_API_KEY,
     OPENAI_API_BASE,
     DEFAULT_MODEL,
