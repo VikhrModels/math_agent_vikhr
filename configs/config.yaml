@@ -31,7 +31,7 @@ models:
 # --- Lean конфигурация ---
 lean:
   # В Lean 4 проекте валидационные утверждения находятся в `MiniF2F/Valid.lean`
-  source_file: "miniF2F-lean4/MiniF2F/Valid.lean"
+  source_file: "MiniF2F/Valid.lean"
   output_file: "valid.json"
   timeout: 900  # секунды для компиляции Lean (увеличено с 30)
 
