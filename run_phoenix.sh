@@ -19,11 +19,14 @@ if [[ -z "$FREE_PORT" ]]; then
 fi
 
 # Activate venv
-if [[ -f "venv/bin/activate" ]]; then
+if [[ -f ".venv/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+elif [[ -f "venv/bin/activate" ]]; then
   # shellcheck disable=SC1091
   source venv/bin/activate
 else
-  echo "venv not found. Please create/activate venv first." >&2
+  echo "Virtual environment not found. Please run 'uv sync' or create/activate venv first." >&2
   exit 1
 fi
 
