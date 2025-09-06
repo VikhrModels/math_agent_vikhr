@@ -5,12 +5,12 @@ import subprocess
 import time
 import logging
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set, Tuple
 import requests
 from opentelemetry import trace
 import brotli
 import json
-from configs.config_loader import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
+from configs.config_loader import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR, SEARCH_CONFIG
 import tempfile
 import shutil
 
@@ -501,9 +501,12 @@ class BatchMoogleSemanticSearch(Tool):
     }
     output_type = "object"
 
-    # Global in-memory budget tracker and naive per-query cache
+    # Global in-memory trackers
     _budget_usage: Dict[str, int] = {}
     _cache: Dict[str, list] = {}
+    _seen_queries: Dict[str, List[str]] = {}  # theorem_key -> list of normalized queries
+    _seen_declarations: Dict[str, Set[Tuple[str, str]]] = {}  # theorem_key -> {(name, path)}
+    _plateau_streak: Dict[str, int] = {}  # theorem_key -> consecutive low-growth count
 
     def _single_search(self, query: str) -> dict:
         # Reuse the single-search logic directly to avoid code duplication
@@ -575,21 +578,135 @@ class BatchMoogleSemanticSearch(Tool):
             logger.error(f"[BatchMoogleSemanticSearch] Request error: {e}")
             return {"error": str(e)}
 
+    @staticmethod
+    def _normalize_query(q: str) -> str:
+        s = (q or "").lower()
+        s = re.sub(r"[^a-z0-9\s]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    @staticmethod
+    def _jaccard_similarity(a: str, b: str, n: int = 3) -> float:
+        def ngrams(s: str, n: int) -> Set[str]:
+            if len(s) < n:
+                return {s}
+            return {s[i:i+n] for i in range(len(s)-n+1)}
+        A = ngrams(a, n)
+        B = ngrams(b, n)
+        if not A and not B:
+            return 1.0
+        inter = len(A & B)
+        union = len(A | B) or 1
+        return inter / union
+
+    def _is_novel(self, theorem_key: str, q_norm: str) -> bool:
+        min_novelty = float(SEARCH_CONFIG['novelty'].get('min_query_novelty', 0.15))
+        seen = self._seen_queries.get(theorem_key, [])
+        if not seen:
+            return True
+        # novelty ~ 1 - max_similarity
+        max_sim = 0.0
+        for prev in seen:
+            sim = self._jaccard_similarity(prev, q_norm, n=3)
+            if sim > max_sim:
+                max_sim = sim
+            if max_sim >= 1 - min_novelty:
+                break
+        novelty = 1.0 - max_sim
+        return novelty >= min_novelty
+
+    def _update_seen_queries(self, theorem_key: str, q_norms: List[str]) -> None:
+        cur = self._seen_queries.get(theorem_key, [])
+        cur.extend(q_norms)
+        # keep last 100 for memory bound
+        self._seen_queries[theorem_key] = cur[-100:]
+
+    def _collect_decls(self, items: List[dict]) -> Set[Tuple[str, str]]:
+        decls: Set[Tuple[str, str]] = set()
+        for it in items or []:
+            name = str(it.get('declarationName', '') or '')
+            path = str(it.get('mathlibPath', '') or '')
+            if name or path:
+                decls.add((name, path))
+        return decls
+
+    def _apply_rerank_and_trim(self, theorem_key: str, q: str, items: List[dict], batch_index: int, max_per_query: int) -> List[dict]:
+        if not isinstance(items, list) or not items:
+            return []
+        schedule = SEARCH_CONFIG['rerank'].get('max_per_query_schedule', [10, 6, 3])
+        # pick schedule value by batch index if available
+        scheduled_cap = schedule[batch_index] if batch_index < len(schedule) else schedule[-1]
+        cap = min(max_per_query or scheduled_cap, scheduled_cap)
+        enable_mmr = bool(SEARCH_CONFIG['rerank'].get('enable_mmr', True))
+        if not enable_mmr:
+            return items[:cap]
+        # Simple diversity heuristic: prefer unique mathlibPath then name
+        seen_paths: Set[str] = set()
+        seen_names: Set[str] = set()
+        diversified: List[dict] = []
+        for it in items:
+            path = it.get('mathlibPath') or ''
+            name = it.get('declarationName') or ''
+            key = (path, name)
+            if path in seen_paths and name in seen_names:
+                continue
+            seen_paths.add(path)
+            seen_names.add(name)
+            diversified.append(it)
+            if len(diversified) >= cap:
+                break
+        if len(diversified) < cap:
+            # top up with remaining items
+            for it in items:
+                if it not in diversified:
+                    diversified.append(it)
+                    if len(diversified) >= cap:
+                        break
+        return diversified[:cap]
+
     def forward(self, theorem_key: str, queries: List[str], max_per_query: int = 10, max_batches_global: int = 4) -> dict:
         logger.info(f"[BatchMoogleSemanticSearch] Starting batched search. Theorem={theorem_key}, Queries={len(queries)}, max_per_query={max_per_query}, max_batches_global={max_batches_global}")
         if not isinstance(queries, list) or not queries or not isinstance(theorem_key, str) or not theorem_key:
             return {"results": {}, "total_items": 0}
 
+        # Centralized caps from config
+        cfg_cap = int(SEARCH_CONFIG['caps'].get('max_batches_global_default', 2))
         # Hard safety cap of 5 regardless of what the caller requests
-        effective_cap = min(max_batches_global, 5)
+        effective_cap = min(max_batches_global or cfg_cap, cfg_cap, 5)
         used = self._budget_usage.get(theorem_key, 0)
         if used >= effective_cap:
             logger.warning(f"[BatchMoogleSemanticSearch] Budget exhausted for theorem_key='{theorem_key}' (used={used} ≥ cap={max_batches_global})")
-            return {"results": {}, "total_items": 0, "warning": "search_budget_exhausted"}
+            out = {"results": {}, "total_items": 0, "warning": "search_budget_exhausted"}
+            if SEARCH_CONFIG.get('finalize_hint', {}).get('enabled', True):
+                out["hint"] = "finalize_next_step"
+            return out
 
         grouped: Dict[str, list] = {}
         total_items = 0
-        for q in queries:
+        # Prepare novelty filtering
+        norm_queries = [self._normalize_query(q) for q in queries]
+        kept_indices: List[int] = []
+        for idx, (q, qn) in enumerate(zip(queries, norm_queries)):
+            if self._is_novel(theorem_key, qn):
+                kept_indices.append(idx)
+            else:
+                logger.info(f"[BatchMoogleSemanticSearch] Skipping non-novel query: '{q}'")
+                grouped[q] = []
+        # If all queries are non-novel
+        if not kept_indices:
+            used_cap = used
+            logger.info(f"[BatchMoogleSemanticSearch] All queries non-novel for theorem_key='{theorem_key}'")
+            out = {"results": grouped, "total_items": 0, "warning": "not_novel"}
+            if SEARCH_CONFIG.get('finalize_hint', {}).get('enabled', True):
+                out["hint"] = "finalize_next_step"
+            return out
+
+        # Determine batch index for schedule
+        batch_index = used  # 0-based
+
+        for idx in kept_indices:
+            q = queries[idx]
+            qn = norm_queries[idx]
             # Cache lookup
             if q in self._cache:
                 items = list(self._cache[q])
@@ -599,14 +716,69 @@ class BatchMoogleSemanticSearch(Tool):
                 items = res.get('data', []) if isinstance(res, dict) else []
                 # cache raw list (untrimmed) to allow different max_per_query later
                 self._cache[q] = list(items)
-            if isinstance(items, list) and max_per_query > 0:
-                items = items[:max_per_query]
+            # Rerank and schedule-based trim
+            # prefer config default if max_per_query is None
+            mpq_default = int(SEARCH_CONFIG['caps'].get('max_per_query_default', 10))
+            eff_max_per_query = max_per_query if max_per_query is not None else mpq_default
+            items = self._apply_rerank_and_trim(theorem_key, q, items, batch_index, eff_max_per_query)
             grouped[q] = items
             total_items += len(items)
+
+        # Plateau detection
+        new_decls = set()
+        for lst in grouped.values():
+            new_decls |= self._collect_decls(lst)
+        seen_decls = self._seen_declarations.get(theorem_key, set())
+        added = new_decls - seen_decls
+        growth_ratio = (len(added) / max(1, len(new_decls))) if new_decls else 0.0
+        min_growth = float(SEARCH_CONFIG['plateau'].get('min_new_items_ratio', 0.05))
+        patience = int(SEARCH_CONFIG['plateau'].get('patience', 1))
+        streak = self._plateau_streak.get(theorem_key, 0)
+
+        plateau_triggered = False
+        if growth_ratio < min_growth:
+            streak += 1
+            self._plateau_streak[theorem_key] = streak
+            if streak >= patience:
+                plateau_triggered = True
+        else:
+            self._plateau_streak[theorem_key] = 0
+
+        # Update seen state
+        self._seen_declarations[theorem_key] = seen_decls | new_decls
+        self._update_seen_queries(theorem_key, [norm_queries[i] for i in kept_indices])
+
         # Update budget
         self._budget_usage[theorem_key] = used + 1
-        logger.info(f"[BatchMoogleSemanticSearch] Finished batched search. Total kept items={total_items}. Budget now used={self._budget_usage[theorem_key]}/{effective_cap}")
-        return {"results": grouped, "total_items": total_items}
+
+        # Compose output
+        out: Dict[str, Any] = {"results": grouped, "total_items": total_items}
+        if plateau_triggered:
+            out["warning"] = "plateau_reached"
+        if SEARCH_CONFIG.get('finalize_hint', {}).get('enabled', True):
+            # Give a hint to finalize if budget low, plateau, or low novelty
+            if plateau_triggered or self._budget_usage[theorem_key] >= effective_cap:
+                out["hint"] = "finalize_next_step"
+
+        # Telemetry attributes
+        try:
+            with tracer.start_as_current_span(
+                "search_metrics",
+                attributes={
+                    "search.budget_used": self._budget_usage[theorem_key],
+                    "search.budget_cap": effective_cap,
+                    "search.kept_queries": len(kept_indices),
+                    "search.total_items": total_items,
+                    "search.growth_ratio": growth_ratio,
+                    "search.plateau_streak": self._plateau_streak.get(theorem_key, 0),
+                },
+            ):
+                pass
+        except Exception:
+            pass
+
+        logger.info(f"[BatchMoogleSemanticSearch] Finished batched search. Kept queries={len(kept_indices)} Total kept items={total_items}. Budget now used={self._budget_usage[theorem_key]}/{effective_cap}")
+        return out
 
 # Create an instance of the tool
 verify_lean_proof = VerifyLeanProof()

@@ -382,8 +382,9 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
     )
 
     # --- Planner / Orchestrator ----------------------------------------
+    # Note: remove direct access to batch_semantic_search; enforce delegation to search_agent
     planner_agent = CodeAgent(
-        tools=[verify_lean_proof, batch_semantic_search],  # quick fast-path compilations and rare search
+        tools=[verify_lean_proof],
         managed_agents=[search_agent, code_agent],
         model=model,
         max_steps=max_steps,
@@ -392,8 +393,8 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
         description=(
             "Top-down planner: build a DAG plan of lemma stubs, assign <complexity, criticality>, manage budgets, "
             "and orchestrate code/search agents. Use fast-path for easy goals; otherwise, full pipeline. Re-plan when "
-            "Lean feedback indicates better formulations (type/instance issues, tactic stalls). Search is allowed only "
-            "as a single batched call via `batch_semantic_search` and is globally budgeted per theorem."
+            "Lean feedback indicates better formulations (type/instance issues, tactic stalls). For semantic search, "
+            "delegate strictly to `search_agent` (single batched step, globally budgeted per theorem)."
         ),
     )
 

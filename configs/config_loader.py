@@ -138,6 +138,9 @@ DEFAULT_CONCURRENCY = _config['agent']['concurrency']
 # Agent Budgets Configuration
 AGENT_BUDGETS = _config['agent']['budgets']
 
+# Search Configuration
+SEARCH_CONFIG = _config['search']
+
 # Logging Configuration
 LOG_FILE = _config['logging']['file']
 LOG_FORMAT = _config['logging']['format']
@@ -201,6 +204,7 @@ __all__ = [
     "DEFAULT_PLANNING_INTERVAL",
     "DEFAULT_CONCURRENCY",
     "AGENT_BUDGETS",
+    "SEARCH_CONFIG",
     "LOG_FILE",
     "LOG_FORMAT",
     "validate_config",
