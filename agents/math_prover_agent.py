@@ -618,16 +618,42 @@ def main():
 
     # --- Telemetry (Phoenix + OTel) ---
     try:
-        from phoenix.otel import register
+        import phoenix as px
         from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk import trace as trace_sdk
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
         
-        # Simple Phoenix registration
-        project_name = os.getenv("PHOENIX_PROJECT_NAME", "math_agent_vikhr")
+        # Check if Phoenix server is running by reading the port file
+        phoenix_port_file = TMP_DIR / "phoenix_port"
+        phoenix_endpoint = None
         
-        tracer_provider = register(project_name=project_name)
-        SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
+        if phoenix_port_file.exists():
+            try:
+                phoenix_port = phoenix_port_file.read_text().strip()
+                phoenix_endpoint = f"http://localhost:{phoenix_port}/v1/traces"
+                logger.info(f"Phoenix endpoint detected: {phoenix_endpoint}")
+            except Exception as e:
+                logger.warning(f"Could not read Phoenix port file: {e}")
         
-        logger.info(f"Phoenix telemetry initialized for project: {project_name}")
+        if phoenix_endpoint:
+            # Set up OTLP exporter to local Phoenix
+            exporter = OTLPSpanExporter(endpoint=phoenix_endpoint)
+            tracer_provider = trace_sdk.TracerProvider()
+            span_processor = BatchSpanProcessor(exporter)
+            tracer_provider.add_span_processor(span_processor)
+            
+            # Set the tracer provider
+            trace.set_tracer_provider(tracer_provider)
+            
+            # Instrument smolagents
+            SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
+            
+            logger.info(f"Phoenix telemetry initialized with endpoint: {phoenix_endpoint}")
+        else:
+            logger.warning("Phoenix server not detected - starting without tracing")
+            logger.info("Start Phoenix server first with: ./run_phoenix.sh")
             
     except Exception as e:
         logger.warning(f"Telemetry initialization failed (continuing without tracing): {e}")
