@@ -8,7 +8,7 @@
 # If you must use pip, this file provides the same dependencies as pyproject.toml
 
 # Core dependencies for the multi-agent system
-smolagents[toolkit]>=1.20.0
+smolagents[toolkit]>=1.21.0
 openai>=1.0.0
 tiktoken>=0.5.0
 
@@ -20,7 +20,10 @@ tenacity>=8.0.0
 brotli>=1.1.0
 PyYAML>=6.0
 opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-exporter-otlp>=1.36.0
 
 # Observability and telemetry
-# phoenix-sdk>=2.0.0
-# openinference-instrumentation-smolagents>=0.1.0
+arize-phoenix>=11.32.1
+openinference-instrumentation-smolagents>=0.1.16
+openinference-instrumentation-openai>=0.1.31
