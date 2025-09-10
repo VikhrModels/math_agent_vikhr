@@ -41,6 +41,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer("math_prover")
+
+# --- Custom model wrapper for xAI compatibility ---
+class XAICompatibleModel:
+    """
+    A wrapper around OpenAIServerModel that filters out unsupported parameters for xAI models.
+    xAI models don't support the 'stop' parameter, so we need to remove it.
+    """
+    
+    def __init__(self, model_id: str, api_base: str, **kwargs):
+        self._model = OpenAIServerModel(model_id=model_id, api_base=api_base, **kwargs)
+        self.model_id = model_id
+        self.api_base = api_base
+        
+        # Check if this is an xAI model
+        self.is_xai_model = any(xai_provider in model_id.lower() for xai_provider in ['xai', 'grok'])
+        
+    def __getattr__(self, name):
+        """Delegate all other attributes to the wrapped model."""
+        return getattr(self._model, name)
+    
+    def generate(self, messages, **kwargs):
+        """Override generate to filter out unsupported parameters for xAI models."""
+        if self.is_xai_model:
+            # Remove unsupported parameters for xAI models
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['stop', 'stop_sequences']}
+            logger.debug(f"Filtered out unsupported parameters for xAI model {self.model_id}: {set(kwargs.keys()) - set(filtered_kwargs.keys())}")
+            return self._model.generate(messages, **filtered_kwargs)
+        else:
+            return self._model.generate(messages, **kwargs)
+    
+    def generate_stream(self, messages, **kwargs):
+        """Override generate_stream to filter out unsupported parameters for xAI models."""
+        if self.is_xai_model:
+            # Remove unsupported parameters for xAI models
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['stop', 'stop_sequences']}
+            logger.debug(f"Filtered out unsupported parameters for xAI model {self.model_id}: {set(kwargs.keys()) - set(filtered_kwargs.keys())}")
+            return self._model.generate_stream(messages, **filtered_kwargs)
+        else:
+            return self._model.generate_stream(messages, **kwargs)
+
 # --- Lightweight difficulty estimator & budget router ---
 def estimate_difficulty(statement: str) -> float:
     """
@@ -346,7 +386,8 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
     os.environ['OPENAI_API_KEY'] = api_key
 
     # Shared model across sub-agents (cheaper & coherent)
-    model = OpenAIServerModel(
+    # Use XAICompatibleModel to handle xAI models that don't support 'stop' parameter
+    model = XAICompatibleModel(
         model_id=model_id,
         api_base=api_base,
     )
