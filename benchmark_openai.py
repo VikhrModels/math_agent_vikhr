@@ -362,3 +362,74 @@ if __name__ == "__main__":
     main()
 
 
+
+def run_benchmark(config: dict) -> dict:
+    """Programmatic entry point used by the unified runner.
+
+    Expected config keys:
+      - dataset_path: str
+      - model: str
+      - concurrency: int
+      - num_examples: int | None
+      - max_output_tokens: int | None (ignored here)
+
+    Returns:
+      dict with fields: score (0..1), evaluation_time (seconds), results (name->bool)
+    """
+    import time
+
+    dataset_path: Path = Path(config.get("dataset_path", LEAN_OUTPUT_FILE))
+    model_name: str = config.get("model", DEFAULT_MODEL)
+    concurrency: int = int(config.get("concurrency", 4))
+    num_examples = config.get("num_examples", DEFAULT_SUBSET_SIZE)
+
+    logging.getLogger().setLevel(getattr(logging, DEFAULT_LOG_LEVEL))
+
+    start_time = time.time()
+
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        all_theorems = read_json_file(dataset_path)
+    except Exception as e:
+        logger.critical(f"Failed to load JSON file: {e}. Returning empty results.")
+        return {"score": 0.0, "evaluation_time": 0.0, "results": {}, "notes": "load_error"}
+    if not all_theorems:
+        return {"score": 0.0, "evaluation_time": 0.0, "results": {}, "notes": "empty_dataset"}
+
+    micro_subset = select_micro_subset_stratified(all_theorems, num_examples) if isinstance(num_examples, int) and num_examples > 0 else all_theorems
+    if not micro_subset:
+        return {"score": 0.0, "evaluation_time": 0.0, "results": {}, "notes": "empty_subset"}
+
+    global client, SELECTED_MODEL
+    client = make_client()
+    SELECTED_MODEL = model_name
+
+    results: dict[str, bool] = {}
+
+    name_to_theorem = {t['name']: t for t in micro_subset}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        future_to_theorem = {executor.submit(process_theorem_task, th): th['name'] for th in micro_subset}
+        for future in concurrent.futures.as_completed(future_to_theorem):
+            name = future_to_theorem[future]
+            try:
+                success, _ = future.result(timeout=360)
+                results[name] = success
+            except concurrent.futures.TimeoutError:
+                logger.error(f"❌ Timeout processing theorem {name}")
+                results[name] = False
+            except Exception as e:
+                logger.error(f"❌ Error processing theorem {name}: {e}")
+                results[name] = False
+
+    solved = sum(1 for ok in results.values() if ok)
+    total = len(results)
+    duration = time.time() - start_time
+
+    score = (solved / total) if total > 0 else 0.0
+    return {
+        "score": score,
+        "evaluation_time": duration,
+        "results": results,
+        "notes": "openai",
+    }
+

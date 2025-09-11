@@ -152,6 +152,23 @@ python verify_task.py --code "theorem t1 : 2 + 2 = 4 := by norm_num"
 
 The script ensures `import MiniF2F.Minif2fImport` is present, writes a temp file under `miniF2F-lean4`, runs `lake env lean` and forwards compiler output, returning Lean's exit code.
 
+## Unified runner (DOoM-style)
+
+Run multiple models from a single YAML config and get a leaderboard:
+
+```bash
+python runner.py --config configs/run.yaml --dataset minif2f --max-workers 8
+```
+
+- Config file: `configs/run.yaml`
+  - `model_list`: list of model keys
+  - Per-model blocks (keys must match `model_list`):
+    - `model_name`, `api_type` (openrouter|openai|agent), `parallel`, optional `num_examples`, `system_prompt`, `max_tokens`
+- Results are written to:
+  - `results/leaderboard.md` — aggregated leaderboard
+  - `results/details/<model_key>/summary.json` and `results/details/<model_key>/results.json`
+- Use `--no-cache` to force re-run even if summary exists.
+
 ## Dependencies
 
 **uv** is recommended for faster dependency resolution and automatic virtual environment management.

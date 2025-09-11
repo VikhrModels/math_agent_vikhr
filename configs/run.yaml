@@ -1,0 +1,20 @@
+# Run configuration for unified benchmark runner (DOoM-style)
+
+# List of model keys to evaluate in this run
+model_list:
+  - openrouter_default
+
+# Optional global defaults (can be overridden per model)
+# num_examples: 50
+# max_workers: 4
+# debug: false
+
+# Per-model configuration blocks. The block key must match entries in model_list.
+openrouter_default:
+  model_name: "anthropic/claude-sonnet-4"  # or use env MATH_AGENT_MODEL
+  api_type: openrouter
+  parallel: 10
+  # num_examples: 20  # override global if needed
+  max_tokens: 4096
+
+
