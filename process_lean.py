@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 # Import configuration
-from config import (
+from configs.config_loader import (
     LEAN_SOURCE_FILE,
     LEAN_OUTPUT_FILE,
     LOG_FORMAT,

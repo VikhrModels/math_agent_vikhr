@@ -27,9 +27,26 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+import shutil
 
-# Absolute path to Lake binary provided by the user
-LAKE_BINARY = "/home/ismail/.elan/bin/lake"
+def resolve_lake_binary() -> str:
+    """Resolve path to `lake` binary with sensible fallbacks.
+
+    Priority:
+    1) `LAKE_BINARY` environment variable if it points to an existing file
+    2) `lake` discovered on PATH via `shutil.which`
+    3) Default `$HOME/.elan/bin/lake`
+    """
+    env_binary = os.getenv("LAKE_BINARY")
+    if env_binary and Path(env_binary).exists():
+        return env_binary
+    which_binary = shutil.which("lake")
+    if which_binary:
+        return which_binary
+    return str(Path.home() / ".elan" / "bin" / "lake")
+
+# Path to Lake binary (can be overridden via LAKE_BINARY env)
+LAKE_BINARY = resolve_lake_binary()
 
 # Always use the miniF2F-lean4 directory as the Lake project root
 PROJECT_ROOT = Path(__file__).resolve().parent / "miniF2F-lean4"
@@ -57,6 +74,14 @@ def find_lake_project_root(file_path: Path) -> Path | None:
 def verify_lean_file(lean_file: Path) -> int:
     """Compile `lean_file` with Lake using the fixed project root; return exit code."""
     print(f"[verify_task] Lake project root: {PROJECT_ROOT}")
+
+    if not Path(LAKE_BINARY).exists():
+        print(
+            "[verify_task] Error: Could not locate `lake` executable. Set LAKE_BINARY env variable or install elan (which provides lake).\n"
+            f"  Tried: {LAKE_BINARY}",
+            file=sys.stderr,
+        )
+        return 1
 
     cmd = [LAKE_BINARY, "env", "lean", str(lean_file)]
     print(f"[verify_task] Running: {' '.join(cmd)}\n")

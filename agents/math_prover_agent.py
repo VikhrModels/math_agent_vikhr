@@ -1,4 +1,5 @@
 import sys
+import os
 import json
 import random
 import logging
@@ -7,22 +8,25 @@ from pathlib import Path
 from datetime import datetime
 import tiktoken
 from typing import Union, Optional
+import threading
 import concurrent.futures
 
 # Add the parent directory to Python path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import CodeAgent, OpenAIServerModel
-from config import (
-    DEFAULT_MODEL, AVAILABLE_MODELS,
+from configs.config_loader import (
+    DEFAULT_MODEL,
     OPENROUTER_API_BASE, OPENROUTER_API_KEY,
     MINIF2F_DIR, LOG_DIR, TMP_DIR, LEAN_OUTPUT_FILE,
     DEFAULT_SUBSET_SIZE, DEFAULT_LOG_LEVEL,
     DEFAULT_MAX_STEPS, DEFAULT_PLANNING_INTERVAL,
     DEFAULT_CONCURRENCY,
     validate_config, validate_provider_credentials,
+    AGENT_BUDGETS,
 )
-from agents.tools import verify_lean_proof, moogle_semantic_search
+from agents.tools import verify_lean_proof, batch_semantic_search
+from opentelemetry import trace
 
 # --- Logging setup ---
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -36,6 +40,96 @@ logging.basicConfig(
     force=True  # Force reconfiguration even if already configured
 )
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("math_prover")
+
+# --- Custom model wrapper for xAI compatibility ---
+class XAICompatibleModel:
+    """
+    A wrapper around OpenAIServerModel that filters out unsupported parameters for xAI models.
+    xAI models don't support the 'stop' parameter, so we need to remove it.
+    """
+    
+    def __init__(self, model_id: str, api_base: str, **kwargs):
+        self._model = OpenAIServerModel(model_id=model_id, api_base=api_base, **kwargs)
+        self.model_id = model_id
+        self.api_base = api_base
+        
+        # Check if this is an xAI model
+        self.is_xai_model = any(xai_provider in model_id.lower() for xai_provider in ['xai', 'grok'])
+        
+    def __getattr__(self, name):
+        """Delegate all other attributes to the wrapped model."""
+        return getattr(self._model, name)
+    
+    def generate(self, messages, **kwargs):
+        """Override generate to filter out unsupported parameters for xAI models."""
+        if self.is_xai_model:
+            # Remove unsupported parameters for xAI models
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['stop', 'stop_sequences']}
+            logger.debug(f"Filtered out unsupported parameters for xAI model {self.model_id}: {set(kwargs.keys()) - set(filtered_kwargs.keys())}")
+            return self._model.generate(messages, **filtered_kwargs)
+        else:
+            return self._model.generate(messages, **kwargs)
+    
+    def generate_stream(self, messages, **kwargs):
+        """Override generate_stream to filter out unsupported parameters for xAI models."""
+        if self.is_xai_model:
+            # Remove unsupported parameters for xAI models
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['stop', 'stop_sequences']}
+            logger.debug(f"Filtered out unsupported parameters for xAI model {self.model_id}: {set(kwargs.keys()) - set(filtered_kwargs.keys())}")
+            return self._model.generate_stream(messages, **filtered_kwargs)
+        else:
+            return self._model.generate_stream(messages, **kwargs)
+
+# --- Lightweight difficulty estimator & budget router ---
+def estimate_difficulty(statement: str) -> float:
+    """
+    Heuristic difficulty score s in [0, 1] based on static features of the Lean statement.
+    We avoid expensive probing here to conserve steps; focus on structural cues.
+    """
+    s = 0.0
+    text = (statement or "").lower()
+    # Quantifiers and heavy domains
+    hard_markers = [
+        '∀', 'exists', '∃', 'topological', 'measure', 'integral', 'filter', 'lim', 'converge',
+        'matrix', 'linear', 'bounded', 'compact', 'continuous', 'differentiable', 'normed', 'complex', 'ℂ',
+        'real.sqrt', 'nat.find', 'finset', 'fintype', 'subtype', 'quotient', 'card', 'polynomial', 'ring_hom',
+        'group', 'subgroup', 'order', 'sup', 'inf', 'supremum', 'infimum', '⊥', '⊤'
+    ]
+    medium_markers = [
+        'nat', 'int', 'ℕ', 'ℤ', 'ℝ', 'iff', '↔', '≤', '<', '≥', '≥', 'mod', 'dvd', '^', 'pow', 'sum', '∑',
+        'prod', '∏', 'cases', 'by_cases', 'induction', 'det', 'rank', 'basis'
+    ]
+    easy_markers = ['simp', 'norm_num', 'linarith', 'ring', 'tauto']
+
+    # length / tokens proxy
+    length_factor = min(len(text) / 600.0, 1.0)  # cap at long statements
+    s += 0.2 * length_factor
+
+    s += 0.05 * sum(1 for m in easy_markers if m in text)  # slightly easier if tactics are hinted
+    s += 0.15 * sum(1 for m in medium_markers if m in text)
+    s += 0.25 * sum(1 for m in hard_markers if m in text)
+
+    # normalize to [0,1]
+    return max(0.0, min(1.0, s))
+
+
+def select_budgets(score: float) -> dict:
+    """Map difficulty score to mode and concrete budgets for search and code attempts."""
+    if score <= 0.3:
+        return {
+            'mode': 'fast_path',
+            **AGENT_BUDGETS['fast_path']
+        }
+    if score <= 0.6:
+        return {
+            'mode': 'micro_plan',
+            **AGENT_BUDGETS['micro_plan']
+        }
+    return {
+        'mode': 'full_pipeline',
+        **AGENT_BUDGETS['full_pipeline']
+    }
 
 # --- Checkpoint configuration ---
 CHECKPOINT_DIR = TMP_DIR / "checkpoints"
@@ -75,7 +169,7 @@ def save_checkpoint(results: dict, processed_count: int, total_count: int, check
         logger.error(f"❌ Failed to save checkpoint: {e}")
 
 def load_checkpoint(checkpoint_name: str) -> Optional[dict]:
-    """Load progress from a checkpoint file."""
+    """Load progress from a checkpoint file (legacy format)."""
     checkpoint_file = CHECKPOINT_DIR / f"{checkpoint_name}.json"
     
     if not checkpoint_file.exists():
@@ -92,11 +186,88 @@ def load_checkpoint(checkpoint_name: str) -> Optional[dict]:
         logger.error(f"❌ Failed to load checkpoint: {e}")
         return None
 
+def load_stage_checkpoint(run_id: str, stage_index: int = None) -> Optional[dict]:
+    """Load progress from a stage-based checkpoint file.
+    
+    Args:
+        run_id: The run identifier (e.g., '20250816-204214')
+        stage_index: Specific stage to load. If None, loads the latest stage.
+    
+    Returns:
+        Checkpoint data or None if not found
+    """
+    run_dir = CHECKPOINT_DIR / f"run-{run_id}"
+    
+    if not run_dir.exists():
+        logger.warning(f"Run directory not found: {run_dir}")
+        return None
+    
+    # If stage_index is not specified, find the latest stage
+    if stage_index is None:
+        stage_files = list(run_dir.glob("stage-*.json"))
+        if not stage_files:
+            logger.warning(f"No stage files found in {run_dir}")
+            return None
+        
+        # Sort by stage number and get the latest
+        stage_numbers = []
+        for stage_file in stage_files:
+            try:
+                stage_num = int(stage_file.stem.split('-')[1])
+                stage_numbers.append(stage_num)
+            except (ValueError, IndexError):
+                continue
+        
+        if not stage_numbers:
+            logger.warning(f"No valid stage files found in {run_dir}")
+            return None
+        
+        stage_index = max(stage_numbers)
+    
+    stage_file = run_dir / f"stage-{stage_index}.json"
+    
+    if not stage_file.exists():
+        logger.warning(f"Stage checkpoint file not found: {stage_file}")
+        return None
+    
+    try:
+        with stage_file.open('r', encoding='utf-8') as f:
+            checkpoint_data = json.load(f)
+        logger.info(f"✅ Stage checkpoint loaded: {stage_file}")
+        logger.info(f"   Run ID: {checkpoint_data.get('run_id', 'unknown')}")
+        logger.info(f"   Stage: {checkpoint_data.get('stage_index', 'unknown')}/{checkpoint_data.get('stages_total', 'unknown')}")
+        logger.info(f"   Processed: {checkpoint_data.get('processed_count', 0)}/{checkpoint_data.get('total_count', 0)} tasks")
+        logger.info(f"   Solved (cumulative): {checkpoint_data.get('solved_cumulative', 0)}")
+        return checkpoint_data
+    except Exception as e:
+        logger.error(f"❌ Failed to load stage checkpoint: {e}")
+        return None
+
 def list_checkpoints() -> list[str]:
     """List all available checkpoint files."""
     checkpoints = []
+    
+    # Legacy checkpoints
     for checkpoint_file in CHECKPOINT_DIR.glob("*.json"):
-        checkpoints.append(checkpoint_file.stem)
+        checkpoints.append(f"legacy: {checkpoint_file.stem}")
+    
+    # Stage-based checkpoints (runs)
+    for run_dir in CHECKPOINT_DIR.glob("run-*"):
+        if run_dir.is_dir():
+            run_id = run_dir.name[4:]  # Remove "run-" prefix
+            stage_files = list(run_dir.glob("stage-*.json"))
+            if stage_files:
+                stage_numbers = []
+                for stage_file in stage_files:
+                    try:
+                        stage_num = int(stage_file.stem.split('-')[1])
+                        stage_numbers.append(stage_num)
+                    except (ValueError, IndexError):
+                        continue
+                if stage_numbers:
+                    latest_stage = max(stage_numbers)
+                    checkpoints.append(f"run: {run_id} (stages 1-{latest_stage})")
+    
     return sorted(checkpoints)
 
 def _ensure_run_dir(run_id: str) -> Path:
@@ -194,65 +365,81 @@ def create_math_prover_agent(max_steps: int = DEFAULT_MAX_STEPS,
                              planning_interval: int = DEFAULT_PLANNING_INTERVAL,
                              model_id: str = DEFAULT_MODEL):
     """
-    Create a multi-agent system for theorem proving:
-    - Idea generator agent: receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent.
-    - Code generator agent: generates Lean code from the strategy and calls the Lean compiler.
-    Returns the main agent (idea generator).
+    Re-architected multi-agent Lean prover based on a top-down planner.
+
+    Returns the planner/orchestrator agent that internally manages:
+        • search_agent — semantic search specialist powered by `moogle_semantic_search`
+        • code_agent   — Lean code generator/verifier using `verify_lean_proof`
     """
+    # Validate configuration & credentials
     try:
         validate_config()
     except (ValueError, FileNotFoundError) as e:
         logger.critical(f"Configuration error: {e}")
         sys.exit(1)
 
-    # Use only OpenRouter provider
     validate_provider_credentials("openrouter")
     api_base = OPENROUTER_API_BASE
     api_key = OPENROUTER_API_KEY
 
-    model = OpenAIServerModel(
+    # Set OPENAI_API_KEY environment variable for smolagents compatibility
+    os.environ['OPENAI_API_KEY'] = api_key
+
+    # Shared model across sub-agents (cheaper & coherent)
+    # Use XAICompatibleModel to handle xAI models that don't support 'stop' parameter
+    model = XAICompatibleModel(
         model_id=model_id,
         api_base=api_base,
-        api_key=api_key,
     )
 
-    # Code generator agent (uses only the Lean proof verifier)
+    # --- Search Agent ---------------------------------------------------
+    search_agent = CodeAgent(
+        tools=[batch_semantic_search],
+        model=model,
+        max_steps=1,  # All queries must be batched in one step
+        planning_interval=1,
+        name="search_agent",
+        description=(
+            "Semantic search specialist for Lean proofs. In a SINGLE Python code block, call `batch_semantic_search` "
+            "with: theorem_key (string), a list of 6–10 rephrasings/equivalent formulations, and max_per_query (8–12). "
+            "Return facts grouped by intended use (rw/simp/apply/induction/instances) and include 1–2 line hints per fact. "
+            "Never call search sequentially; strictly batch in one step. Respect the global per-theorem cap (up to 4–5 batches)."
+        ),
+    )
+
+    # --- Code Agent -----------------------------------------------------
     code_agent = CodeAgent(
         tools=[verify_lean_proof],
         model=model,
-        max_steps=10,
+        max_steps=7,
         planning_interval=1,
-        name="code_generator",
+        name="code_agent",
         description=(
-            "Generates Lean 4 code from a proof strategy and calls the Lean compiler via Lake. "
-            "Returns the code and compiler output. "
-            "CRITICAL RULES: "
-            "1. NEVER write or execute Python code. "
-            "2. NEVER do mathematical calculations in Python. "
-            "3. NEVER create variables, functions, or loops in Python. "
-            "4. ONLY output valid Lean 4 code. "
-            "5. Your output must be a complete Lean theorem statement and proof. "
-            "6. EXAMPLE: theorem example : 2 + 2 = 4 := by norm_num. "
-            "7. Do NOT include any Python code, comments, or analysis - only Lean code. "
-            "8. IMPORTANT: The proof MUST be formatted using 'by' syntax for simple proofs or 'begin' and 'end' syntax for complex proofs. "
-            "9. ALWAYS include 'import MiniF2F.Minif2fImport' at the top. "
-            "10. Use correct Lean 4 syntax: 'Finset.range' (capital F), not 'finset.range'."
-        )
+            "Generates Lean-4 code skeletons and iteratively replaces `sorry` with real proofs. In a single iteration, "
+            "prepare SEVERAL (budgeted) alternative proofs for the current lemma and verify each via `verify_lean_proof`; "
+            "keep the first compiling, robust variant (few subgoals, no timeouts). Perform a sanitation pass before finalizing: "
+            "simplify tactics, clean imports, prefer lighter equivalents, localize simp sets. Output Lean only; final file must contain NO `sorry`."
+        ),
     )
 
-    # Idea generator agent (can search for lemmas and call the code generator)
-    idea_agent = CodeAgent(
-        tools=[moogle_semantic_search],
+    # --- Planner / Orchestrator ----------------------------------------
+    # Note: remove direct access to batch_semantic_search; enforce delegation to search_agent
+    planner_agent = CodeAgent(
+        tools=[verify_lean_proof],
+        managed_agents=[search_agent, code_agent],
         model=model,
-        max_steps=10,
-        planning_interval=1,
-        managed_agents=[code_agent],
-        name="idea_generator",
-        description="Receives a theorem statement, searches for lemmas, forms a proof strategy, and calls the code generator agent."
+        max_steps=max_steps,
+        planning_interval=planning_interval,
+        name="planner_agent",
+        description=(
+            "Top-down planner: build a DAG plan of lemma stubs, assign <complexity, criticality>, manage budgets, "
+            "and orchestrate code/search agents. Use fast-path for easy goals; otherwise, full pipeline. Re-plan when "
+            "Lean feedback indicates better formulations (type/instance issues, tactic stalls). For semantic search, "
+            "delegate strictly to `search_agent` (single batched step, globally budgeted per theorem)."
+        ),
     )
 
-
-    return idea_agent
+    return planner_agent
 
 def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = DEFAULT_MAX_STEPS, enc=None, token_counter=None) -> Union[bool, str]:
     """
@@ -271,136 +458,43 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
     logger.info(f"Agent limit: max_steps={max_steps}")
 
     try:
-        prompt = (
-            f"You are an expert Lean 4 theorem prover agent. You will be given a mathematical theorem to prove.\n"
-            f"You have access to the following tools, which you can call as Python functions in your code blocks.\n"
-            f"To solve the task, proceed in a series of steps, in a cycle of 'Thought:', 'Code:', and 'Observation:' sequences.\n\n"
+        span_attributes = {
+            "theorem.name": theorem.get('name'),
+            "agent.max_steps": max_steps,
+        }
+        span_ctx = tracer.start_as_current_span("prove_theorem", attributes=span_attributes)
+        span_ctx.__enter__()
+        # --- Planner-centric prompt with global plan and strict budgets ---
+        s = estimate_difficulty(theorem['statement'])
+        budgets = select_budgets(s)
+        mode = budgets['mode']
 
-            f"At each step, in the 'Thought:' sequence, explain your reasoning and which tools you want to use.\n"
-            f"Then, in the 'Code:' sequence, write the code in simple Python, ending with '<end_code>'.\n"
-            f"Use print() to display important intermediate results. These will appear in the 'Observation:' field for the next step.\n"
-            f"In the end, return a final answer using the final_answer tool.\n\n"
+        prompt = f"""SYSTEM OVERVIEW:
+You control a TEAM that proves Lean theorems with a top-down → bottom-up process grounded in the Lean compiler.
+Use fast-path for easy goals; otherwise, plan → skeleton → iterative closure. Search is rare, strictly batched, and globally budgeted.
 
-            f"When searching for relevant lemmas or theorems, batch all necessary moogle_semantic_search queries into a single code block for efficiency. Do not call moogle_semantic_search one at a time in separate steps.\n\n"
+WORKFLOW:
+  1) Normalize goal (canonical forms, equivalences).
+  2) Build a DAG of lemma stubs with <complexity, criticality>, limit recursion depth to 3; keep single-use facts as local `have`.
+  3) Generate a Lean skeleton (imports + main theorem + stubs) and ensure it compiles; if Lean complains, revise stubs immediately.
+  4) While `sorry` remain: pick high-priority lemma; attempt cheap tactics first; only if needed, call ONE batched semantic search; have code_agent produce ≤ {budgets['code_candidates_per_lemma']} candidates and keep the first compiling, robust one; re-plan on persistent type/instance/timeouts.
 
-            f"EXAMPLE OF BATCHED SEARCHES (CORRECT):\n"
-            f"Code:\n"
-            f"""```py\nresults_lemma1 = moogle_semantic_search(query=\"lemma about real addition\")\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma1)\nprint(results_lemma2)\n```<end_code>\n"""
-            f"Observation: [results for both queries]\n\n"
-            f"EXAMPLE OF SINGLE SEARCH PER STEP (WRONG):\n"
-            f"Code:\n"
-            f"""```py\nresults_lemma1 = moogle_semantic_search(query=\"lemma about real addition\")\nprint(results_lemma1)\n```<end_code>\n"""
-            f"Observation: [results for first query]\n\n"
-            f"Code:\n"
-            f"""```py\nresults_lemma2 = moogle_semantic_search(query=\"lemma about norm_num\")\nprint(results_lemma2)\n```<end_code>\n"""
-            f"Observation: [results for second query]\n\n"
-            f"Always batch your semantic search queries as shown in the correct example above.\n\n"
+GLOBAL BUDGETS (per theorem):
+  - Planner steps ≤ {max_steps}
+  - Search batches (global) ≤ {budgets['global_search_batches']} (hard-capped by tool)
+  - Facts per query ≤ {budgets['max_per_query']}
+  - Code candidates per lemma ≤ {budgets['code_candidates_per_lemma']}
+  - Compilations per lemma ≤ {budgets['max_code_compiles_per_lemma']}
 
-            f"While using the code agent you must mention those rules in the prompt:\n"
-            f"CRITICAL: You must ONLY generate Lean 4 code and use the verify_lean_proof tool. DO NOT write any Python code, mathematical analysis, or calculations.\n"
-            f"EXAMPLE OF CORRECT APPROACH:\n"
-            f"theorem_statement = '''theorem example : 2 + 2 = 4 := by norm_num'''\n"
-            f"result = verify_lean_proof(theorem_statement)\n"
-            f"DO NOT DO THIS (WRONG):\n"
-            f"# Mathematical analysis in Python\n"
-            f"for i in range(10):\n"
-            f"    print(i)\n"
-            f"Your response must be ONLY Lean code starting with 'theorem' and ending with 'end'.\n"
-            f"No Python code, no comments, no explanations.\n\n"
-            f"IMPORTANT: When calling code_generator, NEVER ask it to write Python code or do calculations. "
-            f"code_generator should ONLY generate Lean 4 code. If you need mathematical analysis, do it in your own reasoning, "
-            f"then pass the strategy to code_generator to convert it to Lean code.\n\n"
+MODE for this theorem: {mode} (difficulty score s={s:.2f}).
 
-            f"Here are a few examples using your available tools and agents:\n"
-            f"---\n"
-            f"Task: 'Prove a theorem about real number arithmetic.'\n\n"
-            f"Thought: I will search for relevant lemmas about real number arithmetic using moogle_semantic_search.\n"
-            f"Code:\n"
-            f"""```py\nresults = moogle_semantic_search(query=\"real number arithmetic lemma\")\nprint(results)\n```<end_code>\n"""
-            f"Observation: [A list of relevant lemmas and their Lean code]\n\n"
-            f"Thought: I will now develop a proof strategy and call the code_generator agent to generate and verify Lean code.\n"
-            f"Code:\n"
-            f"""```py\nstrategy = 'Use the lemma real.add_assoc and norm_num for simplification.'\nlemmas = 'real.add_assoc'\nresult = code_generator(theorem_statement=theorem['statement'], proof_strategy=strategy, lemmas=lemmas)\nprint(result)\n```<end_code>\n"""
-            f"Observation: {{'lean_code': '...', 'compiler_output': 'error: ...'}}\n\n"
-            f"Thought: The proof failed due to a missing import. I will update my strategy and call code_generator again.\n"
-            f"Code:\n"
-            f"""```py\nstrategy = 'Add the necessary import for real numbers and use real.add_assoc.'\nlemmas = 'import data.real.basic, real.add_assoc'\nresult = code_generator(theorem_statement=theorem['statement'], proof_strategy=strategy, lemmas=lemmas)\nprint(result)\n```<end_code>\n"""
-            f"Observation: {{'lean_code': '...', 'compiler_output': 'success'}}\n\n"
-            f"Thought: The proof was successful. I will return the final answer.\n"
-            f"Code:\n"
-            f"""```py\nfinal_answer(result['lean_code'])\n```<end_code>\n"""
-            f"---\n\n"
-            f"=== FEW-SHOT EXAMPLES FROM MINIF2F DATASET ===\n"
-            f"Here are examples of different complexity levels to guide your proof strategies:\n\n"
-            f"1. SIMPLE CALCULATION (norm_num):\n"
-            f"theorem mathd_numbertheory_299 : 1 * 3 * 5 * 7 * 9 * 11 * 13 % 10 = 5 := by norm_num\n\n"
-            f"2. LINEAR ALGEBRA (linarith):\n"
-            f"theorem mathd_algebra_160 (n x : ℝ) (h₀ : n + x = 97) (h₁ : n + 5 * x = 265) : n + 2 * x = 139 := by linarith\n\n"
-            f"3. FIELD SIMPLIFICATION + LINEAR:\n"
-            f"theorem mathd_algebra_33 (x y z : ℝ) (h₀ : x ≠ 0) (h₁ : 2 * x = 5 * y) (h₂ : 7 * y = 10 * z) : z / x = 7 / 25 := by\n"
-            f"  field_simp\n"
-            f"  nlinarith\n\n"
-            f"4. REWRITING + LINEAR:\n"
-            f"theorem mathd_algebra_346 (f g : ℝ → ℝ) (h₀ : ∀ x, f x = 2 * x - 3) (h₁ : ∀ x, g x = x + 1) : g (f 5 - 1) = 7 := by\n"
-            f"  rw [h₀, h₁]\n"
-            f"  norm_num\n\n"
-            f"5. COMPLEX ALGEBRAIC MANIPULATION:\n"
-            f"theorem mathd_algebra_263 (y : ℝ) (h₀ : 0 ≤ 19 + 3 * y) (h₁ : Real.sqrt (19 + 3 * y) = 7) : y = 10 := by\n"
-            f"  revert y h₀ h₁\n"
-            f"  intro x hx\n"
-            f"  rw [Real.sqrt_eq_iff_sq_eq hx]\n"
-            f"  swap\n"
-            f"  norm_num\n"
-            f"  intro h\n"
-            f"  nlinarith\n\n"
-            f"=== RULES YOU MUST ALWAYS FOLLOW ===\n"
-            f"1. Always provide a 'Thought:' sequence, and a 'Code:\n```py' sequence ending with '```<end_code>' sequence, else you will fail.\n"
-            f"2. Use only variables that you have defined!\n"
-            f"3. Always use the right arguments for the tools. DO NOT pass the arguments as a dict, but use the arguments directly as in moogle_semantic_search(query=...).\n"
-            f"4. Never write or execute Python code for proof steps or Lean code generation. Only use code_generator for Lean code.\n"
-            f"5. When using code_generator, you must clearly state the Lean theorem statement and call the agent as in the correct example above.\n"
-            f"6. After developing or updating a proof strategy, ALWAYS call the code_generator agent to generate and verify Lean code, even if the previous attempt failed. Every iteration must include a call to code_generator with the current strategy and lemmas.\n"
-            f"7. Do not chain too many sequential tool calls in the same code block, especially when the output format is unpredictable.\n"
-            f"8. Call a tool only when needed, and never re-do a tool call that you previously did with the exact same parameters.\n"
-            f"9. Don't name any new variable with the same name as a tool.\n"
-            f"10. Never create any notional variables in your code, as having these in your logs might derail you from the true variables.\n"
-            f"11. You can use imports in your code, but only from the following list of modules: {{authorized_imports}}\n"
-            f"12. The state persists between code executions: so if in one step you've created variables or imported modules, these will all persist.\n"
-            f"13. Don't give up! You're in charge of solving the task, not providing directions to solve it.\n"
-            f"14. CRITICAL: All final theorem proofs MUST use Lean 4 syntax with 'by' keyword. Use 'begin...end' only for complex multi-step proofs.\n"
-            f"15. CRITICAL: Always include 'import MiniF2F.Minif2fImport' at the top of your Lean code.\n"
-            f"16. CRITICAL: Use correct Lean 4 syntax: 'Finset.range' (capital F), not 'finset.range'.\n"
-            f"17. CRITICAL: Keep proofs simple and direct. Avoid complex manual proofs that may timeout.\n"
-            f"18. CRITICAL: Use ONLY these proven Lean 4 tactics: norm_num, linarith, nlinarith, ring, simp, rw, exact, apply, cases, induction, tauto, field_simp, ring_nf, assumption, contradiction, exfalso, by_contra, existsi, use, refine, constructor, split, left, right, intro, intros, revert, generalize, specialize, have, let, calc, suffices, by_cases, by_contradiction, push_neg, pull_out, push_in, clear, rename, change, unfold, delta, dsimp, rw_r, erw, rwa, rw_rule, rw_search, simp_rw, simp_all, simp_intros, simp_arith, norm_cast, push_cast, pull_cast, ring_exp, ring_nf, linarith!, nlinarith!, norm_num!, ring!, simp!, rw!, exact!, apply!, cases!, induction!, tauto!, field_simp!, ring_nf!, assumption!, contradiction!, exfalso!, by_contra!, existsi!, use!, refine!, constructor!, split!, left!, right!, intro!, intros!, revert!, generalize!, specialize!, have!, let!, calc!, suffices!, by_cases!, by_contradiction!, push_neg!, pull_out!, push_in!, clear!, rename!, change!, unfold!, delta!, dsimp!, rw_r!, erw!, rwa!, rw_rule!, rw_search!, simp_rw!, simp_all!, simp_intros!, simp_arith!, norm_cast!, push_cast!, pull_cast!, ring_exp!, ring_nf!.\n"
-            f"19. CRITICAL: NEVER use tactics that don't exist in Lean 4. If unsure, stick to: norm_num, linarith, ring, simp, rw, exact, apply.\n"
-            f"20. CRITICAL: NEVER invent new tactics or use tactics you're not sure exist. Stick to the proven list above.\n"
-            f"21. CRITICAL: Use correct Lean 4 syntax: 'Finset.prod' instead of '∏', 'Finset.sum' instead of '∑', 'Finset.range' (capital F), not 'finset.range'.\n"
-            f"22. CRITICAL: If a proof seems too complex, use 'sorry' and try a simpler approach.\n\n"
-            f"=== REQUIRED PROOF FORMAT ===\n"
-            f"Your final answer must be formatted exactly like this:\n"
-            f"import MiniF2F.Minif2fImport\n\n"
-            f"theorem theorem_name :\n"
-            f"  statement_here :=\n"
-            f"by\n"
-            f"  proof_steps_here\n\n"
-            f"For simple proofs:\n"
-            f"import MiniF2F.Minif2fImport\n\n"
-            f"theorem mathd_algebra_10 :\n"
-            f"  abs ((120 : ℝ)/100 * 30 - 130/100 * 20) = 10 :=\n"
-            f"by norm_num\n\n"
-            f"For complex proofs:\n"
-            f"import MiniF2F.Minif2fImport\n\n"
-            f"theorem complex_example :\n"
-            f"  statement_here :=\n"
-            f"begin\n"
-            f"  proof_step_1\n"
-            f"  proof_step_2\n"
-            f"  proof_step_3\n"
-            f"end\n\n"
-            f"=== YOUR TASK ===\n"
-            f"Prove this theorem:\n{theorem['statement']}\n\n"
-            f"Begin by analyzing the theorem and planning your approach!"
-        )
+CONSTRAINTS: Always import MiniF2F.Minif2fImport; write only Lean; batch search queries; no sequential single-search calls; keep search under the global cap.
+
+TASK — prove the following theorem:
+
+{theorem['statement']}
+
+First: state overall difficulty (easy/medium/hard) and a concise DAG plan (lemma names + one-line goals). Then proceed with the pipeline and return final Lean code without `sorry`."""
 
         # Count tokens for the prompt
         if enc is not None and token_counter is not None:
@@ -468,6 +562,11 @@ def prove_theorem_with_agent(agent: CodeAgent, theorem: dict, max_steps: int = D
             return "INSUFFICIENT_CREDITS"
         
         return False
+    finally:
+        try:
+            span_ctx.__exit__(None, None, None)
+        except Exception:
+            pass
 
 def process_theorem_task(theorem: dict,
                          max_steps: int,
@@ -517,16 +616,18 @@ def main():
     parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY,
                         help=f"Number of theorems to process in parallel (default: {DEFAULT_CONCURRENCY}).")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
-                        help=f"Model to use (default: {DEFAULT_MODEL}). Available: {', '.join(AVAILABLE_MODELS)}")
+                        help=f"Model to use for theorem proving (e.g., 'openai/gpt-4o'). Defaults to '{DEFAULT_MODEL}'.")
     # Provider is fixed to OpenRouter; CLI option removed
     
     # Checkpoint arguments
     parser.add_argument("--checkpoint", type=str, default=None,
-                        help="Name of checkpoint to resume from (without .json extension).")
+                        help="Name of checkpoint to resume from (without .json extension). Legacy format.")
+    parser.add_argument("--resume_run", type=str, default=None,
+                        help="Resume from a specific run ID (e.g., '20250816-204214'). New stage-based format.")
+    parser.add_argument("--resume_stage", type=int, default=None,
+                        help="Specific stage to resume from (used with --resume_run). If not specified, resumes from the latest stage.")
     parser.add_argument("--save_checkpoint", type=str, default=None,
                         help="Name for saving checkpoint (without .json extension).")
-    parser.add_argument("--checkpoint_interval", type=int, default=5,
-                        help="Save checkpoint every N processed tasks (default: 5).")
     parser.add_argument("--list_checkpoints", action="store_true",
                         help="List all available checkpoints and exit.")
     # Stages (multi-pass)
@@ -535,9 +636,9 @@ def main():
     args = parser.parse_args()
 
     # Validate model selection
-    if args.model not in AVAILABLE_MODELS:
-        logger.error(f"Invalid model '{args.model}'. Available models: {', '.join(AVAILABLE_MODELS)}")
-        return
+    # if args.model not in AVAILABLE_MODELS:
+    #     logger.error(f"Invalid model '{args.model}'. Available models: {', '.join(AVAILABLE_MODELS)}")
+    #     return
 
     # --- tiktoken setup ---
     try:
@@ -551,12 +652,53 @@ def main():
     VALID_JSON_PATH = args.json_file
     MAX_STEPS = args.max_steps
     PLANNING_INTERVAL = args.planning_interval
-    CHECKPOINT_INTERVAL = args.checkpoint_interval
     CONCURRENCY = args.concurrency
     SELECTED_MODEL = args.model
     SELECTED_PROVIDER = "openrouter"
     
     logging.getLogger().setLevel(getattr(logging, args.log_level.upper()))
+
+    # --- Telemetry (Phoenix + OTel) ---
+    try:
+        import phoenix as px
+        from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+        from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk import trace as trace_sdk
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        
+        # Check if Phoenix server is running by reading the port file
+        phoenix_port_file = TMP_DIR / "phoenix_port"
+        phoenix_endpoint = None
+        
+        if phoenix_port_file.exists():
+            try:
+                phoenix_port = phoenix_port_file.read_text().strip()
+                phoenix_endpoint = f"http://localhost:{phoenix_port}/v1/traces"
+                logger.info(f"Phoenix endpoint detected: {phoenix_endpoint}")
+            except Exception as e:
+                logger.warning(f"Could not read Phoenix port file: {e}")
+        
+        if phoenix_endpoint:
+            # Set up OTLP exporter to local Phoenix
+            exporter = OTLPSpanExporter(endpoint=phoenix_endpoint)
+            tracer_provider = trace_sdk.TracerProvider()
+            span_processor = BatchSpanProcessor(exporter)
+            tracer_provider.add_span_processor(span_processor)
+            
+            # Set the tracer provider
+            trace.set_tracer_provider(tracer_provider)
+            
+            # Instrument smolagents
+            SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
+            
+            logger.info(f"Phoenix telemetry initialized with endpoint: {phoenix_endpoint}")
+        else:
+            logger.warning("Phoenix server not detected - starting without tracing")
+            logger.info("Start Phoenix server first with: ./run_phoenix.sh")
+            
+    except Exception as e:
+        logger.warning(f"Telemetry initialization failed (continuing without tracing): {e}")
 
     # Handle checkpoint listing
     if args.list_checkpoints:
@@ -571,11 +713,24 @@ def main():
 
     logger.info("Starting Agent-based MiniF2F Lean Prover Benchmark...")
     logger.info(f"Configuration: Subset Size={MICRO_SUBSET_SIZE}, JSON File='{VALID_JSON_PATH}', Model='{SELECTED_MODEL}', Log Level='{args.log_level}', Max Steps={MAX_STEPS}, Planning Interval={PLANNING_INTERVAL}, Concurrency={CONCURRENCY}")
+    
+    # Validate checkpoint options
+    if args.checkpoint and args.resume_run:
+        logger.error("Cannot specify both --checkpoint and --resume_run. Use only one.")
+        return
+    
     if args.checkpoint:
-        logger.info(f"Resuming from checkpoint: {args.checkpoint}")
+        logger.info(f"Resuming from legacy checkpoint: {args.checkpoint}")
+    elif args.resume_run:
+        logger.info(f"Resuming from run: {args.resume_run}")
+        if args.resume_stage:
+            logger.info(f"  Specific stage: {args.resume_stage}")
+        else:
+            logger.info("  Latest stage will be used")
+    
     if args.save_checkpoint:
         logger.info(f"Will save checkpoint as: {args.save_checkpoint}")
-    logger.info(f"Checkpoint interval: {CHECKPOINT_INTERVAL} tasks")
+
     
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -605,23 +760,56 @@ def main():
     stages_total = max(1, int(getattr(args, 'stages', 1)))
     logger.info(f"Stages requested: {stages_total}")
 
-    # Resume support (legacy single-file checkpoint)
+    # Resume support (both legacy and new stage-based checkpoints)
     cumulative_results: dict[str, Union[bool, str]] = {}
+    resume_run_id = None
+    
     if args.checkpoint:
+        # Legacy checkpoint format
         checkpoint_data = load_checkpoint(args.checkpoint)
         if checkpoint_data:
             cumulative_results = checkpoint_data.get('results', {})
-            logger.info(f"Loaded previous results from checkpoint '{args.checkpoint}'.")
+            logger.info(f"Loaded previous results from legacy checkpoint '{args.checkpoint}'.")
         else:
-            logger.warning(f"Failed to load checkpoint '{args.checkpoint}', starting fresh.")
+            logger.warning(f"Failed to load legacy checkpoint '{args.checkpoint}', starting fresh.")
+    elif args.resume_run:
+        # New stage-based checkpoint format
+        checkpoint_data = load_stage_checkpoint(args.resume_run, args.resume_stage)
+        if checkpoint_data:
+            cumulative_results = checkpoint_data.get('results_cumulative', {})
+            resume_run_id = checkpoint_data.get('run_id', args.resume_run)
+            logger.info(f"Loaded previous results from stage checkpoint run '{args.resume_run}'.")
+            logger.info(f"  Loaded {len(cumulative_results)} previous results")
+            logger.info(f"  Solved so far: {sum(1 for v in cumulative_results.values() if v is True)}")
+        else:
+            logger.warning(f"Failed to load stage checkpoint run '{args.resume_run}', starting fresh.")
 
     # Run identifier (timestamp) for this multi-stage run
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    # If resuming from a stage checkpoint, use the existing run_id, otherwise create new
+    if resume_run_id:
+        run_id = resume_run_id
+        logger.info(f"Continuing existing run: {run_id}")
+    else:
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        logger.info(f"Starting new run: {run_id}")
+    
     insufficient_credits = False
 
     # Stage loop
     current_tasks = micro_subset
     for stage_index in range(1, stages_total + 1):
+        stage_span = tracer.start_as_current_span(
+            "stage",
+            attributes={
+                "run.id": run_id,
+                "stage.index": stage_index,
+                "stages.total": stages_total,
+                "concurrency": CONCURRENCY,
+                "model.id": SELECTED_MODEL,
+                "provider": SELECTED_PROVIDER,
+            },
+        )
+        stage_span.__enter__()
         if stage_index == 1:
             tasks_this_stage = current_tasks
         else:
@@ -705,7 +893,9 @@ def main():
             )
 
         if insufficient_credits:
+            stage_span.__exit__(None, None, None)
             break
+        stage_span.__exit__(None, None, None)
 
     # Final reporting
     logger.info("\n--- Summary of Results (Cumulative) ---")
@@ -743,3 +933,75 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def run_benchmark(config: dict) -> dict:
+    """Programmatic entry point for the unified runner.
+
+    Expected config keys:
+      - dataset_path: str
+      - model: str | None
+      - concurrency: int | None
+      - num_examples: int | None
+      - max_steps: int | None
+      - planning_interval: int | None
+
+    Returns:
+      dict with fields: score (0..1), evaluation_time (seconds), results (name->bool)
+    """
+    import time
+
+    dataset_path: Path = Path(config.get("dataset_path", LEAN_OUTPUT_FILE))
+    model_name: str = config.get("model", DEFAULT_MODEL)
+    concurrency: int = int(config.get("concurrency", DEFAULT_CONCURRENCY))
+    num_examples = config.get("num_examples", DEFAULT_SUBSET_SIZE)
+    max_steps = int(config.get("max_steps", DEFAULT_MAX_STEPS))
+    planning_interval = int(config.get("planning_interval", DEFAULT_PLANNING_INTERVAL))
+
+    start_time = time.time()
+
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+    try:
+        all_theorems = read_json_file(dataset_path)
+    except Exception as e:
+        logger.critical(f"Failed to load JSON file: {e}. Returning empty results.")
+        return {"score": 0.0, "evaluation_time": 0.0, "results": {}, "notes": "load_error"}
+    if not all_theorems:
+        return {"score": 0.0, "evaluation_time": 0.0, "results": {}, "notes": "empty_dataset"}
+
+    micro_subset = select_micro_subset_stratified(all_theorems, int(num_examples)) if isinstance(num_examples, int) and num_examples > 0 else all_theorems
+    if not micro_subset:
+        return {"score": 0.0, "evaluation_time": 0.0, "results": {}, "notes": "empty_subset"}
+
+    # Do not count tokens inside agent for now (enc=None)
+    enc = None
+
+    results: dict[str, bool] = {}
+    name_to_theorem = {t['name']: t for t in micro_subset}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        future_to_theorem = {
+            executor.submit(process_theorem_task, th, max_steps, planning_interval, model_name, enc): th['name']
+            for th in micro_subset
+        }
+        for future in concurrent.futures.as_completed(future_to_theorem):
+            name = future_to_theorem[future]
+            try:
+                success, _tokens, _name = future.result()
+                results[name] = (success is True)
+            except Exception as e:
+                logger.error(f"❌ Error processing theorem {name}: {e}")
+                results[name] = False
+
+    solved = sum(1 for ok in results.values() if ok)
+    total = len(results)
+    duration = time.time() - start_time
+
+    score = (solved / total) if total > 0 else 0.0
+    return {
+        "score": score,
+        "evaluation_time": duration,
+        "results": results,
+        "notes": "agent",
+    }

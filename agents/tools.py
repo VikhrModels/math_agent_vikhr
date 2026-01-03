@@ -5,11 +5,12 @@ import subprocess
 import time
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Set, Tuple
 import requests
+from opentelemetry import trace
 import brotli
 import json
-from config import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR
+from configs.config_loader import MINIF2F_DIR, LEAN_TIMEOUT, TMP_DIR, LOG_DIR, SEARCH_CONFIG
 import tempfile
 import shutil
 
@@ -17,7 +18,7 @@ import shutil
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from smolagents import Tool
-from config import MINIF2F_DIR, LEAN_TIMEOUT
+from configs.config_loader import MINIF2F_DIR, LEAN_TIMEOUT
 
 # Set up logging for the tool
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -31,6 +32,7 @@ logging.basicConfig(
     force=True  # Force reconfiguration even if already configured
 )
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("math_prover.tools")
 
 # ---------------------------------------------------------------------------
 # LeanVerifier helper (adapted from verify_task.py)
@@ -101,47 +103,61 @@ class LeanVerifier:
         """
         label_str = label or "anonymous"
         logger.info(f"[LeanVerifier] Verifying Lean snippet '{label_str}' (length={len(lean_code)} chars)")
+        with tracer.start_as_current_span(
+            "lean_verify",
+            attributes={
+                "lean.label": label_str,
+                "lean.length": len(lean_code),
+                "lean.project_root": str(self.project_root),
+            },
+        ):
+            # Ensure required import is present
+            if "MiniF2F.Minif2fImport" not in lean_code:
+                lean_code = "import MiniF2F.Minif2fImport\n\n" + lean_code.lstrip()
 
-        # Ensure required import is present
-        if "MiniF2F.Minif2fImport" not in lean_code:
-            lean_code = "import MiniF2F.Minif2fImport\n\n" + lean_code.lstrip()
+            # Write to temporary file in project root
+            tmp_file = tempfile.NamedTemporaryFile("w", suffix=".lean", dir=self.project_root, delete=False, encoding="utf-8")
+            try:
+                tmp_file.write(lean_code)
+                tmp_file.flush()
+                tmp_path = Path(tmp_file.name)
+            finally:
+                tmp_file.close()
 
-        # Write to temporary file in project root
-        tmp_file = tempfile.NamedTemporaryFile("w", suffix=".lean", dir=self.project_root, delete=False, encoding="utf-8")
-        try:
-            tmp_file.write(lean_code)
-            tmp_file.flush()
-            tmp_path = Path(tmp_file.name)
-        finally:
-            tmp_file.close()
+            # Call Lean compiler via Lake
+            cmd = [self.lake_binary, "env", "lean", str(tmp_path)]
+            logger.info(f"[LeanVerifier] Running command: {' '.join(cmd)}  (cwd={self.project_root})")
+            try:
+                with tracer.start_as_current_span(
+                    "lean_compile",
+                    attributes={
+                        "cmd": " ".join(cmd),
+                        "timeout": self.timeout,
+                    },
+                ):
+                    proc = subprocess.run(cmd, cwd=self.project_root, capture_output=True, text=True, timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                logger.error("[LeanVerifier] Lean compilation timed-out")
+                tmp_path.unlink(missing_ok=True)
+                return {"success": False, "output": "Lean compilation timed-out", "exit_code": -1}
 
-        # Call Lean compiler via Lake
-        cmd = [self.lake_binary, "env", "lean", str(tmp_path)]
-        logger.info(f"[LeanVerifier] Running command: {' '.join(cmd)}  (cwd={self.project_root})")
-        try:
-            proc = subprocess.run(cmd, cwd=self.project_root, capture_output=True, text=True, timeout=self.timeout)
-        except subprocess.TimeoutExpired:
-            logger.error("[LeanVerifier] Lean compilation timed-out")
+            stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
+            output_combined = (stdout or "") + (stderr or "")
+
+            # Clean compiler paths to reduce noise
+            clean_output = self._clean_output(output_combined, str(tmp_path))
+
+            # Remove temporary file
             tmp_path.unlink(missing_ok=True)
-            return {"success": False, "output": "Lean compilation timed-out", "exit_code": -1}
 
-        stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
-        output_combined = (stdout or "") + (stderr or "")
+            success = exit_code == 0
+            logger.info(f"[LeanVerifier] Compilation finished – success={success}, exit_code={exit_code}")
 
-        # Clean compiler paths to reduce noise
-        clean_output = self._clean_output(output_combined, str(tmp_path))
-
-        # Remove temporary file
-        tmp_path.unlink(missing_ok=True)
-
-        success = exit_code == 0
-        logger.info(f"[LeanVerifier] Compilation finished – success={success}, exit_code={exit_code}")
-
-        return {
-            "success": success,
-            "exit_code": exit_code,
-            "output": clean_output,
-        }
+            return {
+                "success": success,
+                "exit_code": exit_code,
+                "output": clean_output,
+            }
 
     # -----------------------------------------------------------------------
     # Internals
@@ -390,7 +406,14 @@ class MoogleSemanticSearch(Tool):
         data = [{"isFind": False, "contents": query}]
         try:
             logger.info("[MoogleSemanticSearch] Sending POST request to moogle.ai API...")
-            resp = requests.post(url, headers=headers, json=data)
+            with tracer.start_as_current_span(
+                "semantic_search",
+                attributes={
+                    "provider": "moogle.ai",
+                    "query.length": len(query),
+                },
+            ):
+                resp = requests.post(url, headers=headers, json=data)
             resp.raise_for_status()
             encoding = resp.headers.get('content-encoding', '').lower()
             raw = resp.content
@@ -431,8 +454,337 @@ class MoogleSemanticSearch(Tool):
             logger.error(f"[MoogleSemanticSearch] Request error: {e}")
             return {"error": str(e)}
 
+
+class BatchMoogleSemanticSearch(Tool):
+    """
+    Batched semantic search over moogle.ai.
+
+    Accepts multiple query strings at once and returns grouped, size-limited results
+    to minimize the number of search tool invocations (token- and step-efficient).
+
+    Inputs:
+      - theorem_key: str — stable key for this theorem (e.g., theorem name), used for budget tracking
+      - queries: list[str]  — a small batch of rephrasings/abstractions of the same goal
+      - max_per_query: int (optional, default 10) — cap for results per query to reduce noise
+      - max_batches_global: int (optional, default 4) — cap on number of times this tool can be called per theorem_key
+
+    Output:
+      - { "results": { query: [ items... ] }, "total_items": int }
+    """
+    name = "batch_semantic_search"
+    description = (
+        "Runs a single batched semantic search request against moogle.ai for multiple queries. "
+        "Returns grouped results per input query. Always prefer this over multiple single-query calls."
+    )
+    inputs = {
+        "theorem_key": {
+            "type": "string",
+            "description": "Stable identifier for this theorem (budgeted per key)."
+        },
+        "queries": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Batch of related search queries (rephrasings, equivalent forms)."
+        },
+        "max_per_query": {
+            "type": "integer",
+            "description": "Maximum number of items to keep per query (default 10).",
+            "default": 10,
+            "nullable": True
+        },
+        "max_batches_global": {
+            "type": "integer",
+            "description": "Maximum allowed calls per theorem_key (default 4).",
+            "default": 4,
+            "nullable": True
+        }
+    }
+    output_type = "object"
+
+    # Global in-memory trackers
+    _budget_usage: Dict[str, int] = {}
+    _cache: Dict[str, list] = {}
+    _seen_queries: Dict[str, List[str]] = {}  # theorem_key -> list of normalized queries
+    _seen_declarations: Dict[str, Set[Tuple[str, str]]] = {}  # theorem_key -> {(name, path)}
+    _plateau_streak: Dict[str, int] = {}  # theorem_key -> consecutive low-growth count
+
+    def _single_search(self, query: str) -> dict:
+        # Reuse the single-search logic directly to avoid code duplication
+        # (copy of MoogleSemanticSearch.forward body with minor adjustments)
+        logger.info(f"[BatchMoogleSemanticSearch] Single semantic search for: '{query}'")
+        url = 'https://www.moogle.ai/api/search'
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br, zstd',
+            'Referer': 'https://www.moogle.ai/search/raw?q=cursor',
+            'Content-Type': 'application/json',
+            'Origin': 'https://www.moogle.ai',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'DNT': '1',
+            'Sec-GPC': '1',
+            'Priority': 'u=4',
+        }
+        data = [{"isFind": False, "contents": query}]
+        try:
+            logger.info("[BatchMoogleSemanticSearch] POST moogle.ai API")
+            with tracer.start_as_current_span(
+                "semantic_search.batch",
+                attributes={
+                    "provider": "moogle.ai",
+                    "query.length": len(query),
+                },
+            ):
+                resp = requests.post(url, headers=headers, json=data)
+            resp.raise_for_status()
+            encoding = resp.headers.get('content-encoding', '').lower()
+            raw = resp.content
+            text = None
+            if 'br' in encoding:
+                try:
+                    raw = brotli.decompress(raw)
+                    text = raw.decode('utf-8')
+                    logger.info("[BatchMoogleSemanticSearch] Brotli decoding successful.")
+                except Exception as e:
+                    logger.error(f"[BatchMoogleSemanticSearch] Brotli decode error: {e}")
+                    try:
+                        text = resp.text
+                    except Exception as e2:
+                        logger.error(f"[BatchMoogleSemanticSearch] Error getting resp.text: {e2}")
+                        text = None
+            else:
+                text = resp.text
+            if text is not None:
+                try:
+                    resp_json = json.loads(text)
+                    allowed = {"declarationName", "declarationCode", "declarationDocstring", "declarationType", "sourceCodeUrl", "mathlibPath"}
+                    if 'data' in resp_json and isinstance(resp_json['data'], list):
+                        for i, item in enumerate(resp_json['data']):
+                            if isinstance(item, dict):
+                                resp_json['data'][i] = {k: v for k, v in item.items() if k in allowed}
+                    logger.info(f"[BatchMoogleSemanticSearch] Parsed response. Items={len(resp_json.get('data', []))}")
+                    return resp_json
+                except Exception as e:
+                    logger.error(f"[BatchMoogleSemanticSearch] JSON parse error: {e}")
+                    return {"error": f"JSON parse error: {e}", "raw": text}
+            else:
+                logger.error("[BatchMoogleSemanticSearch] No text response to parse.")
+                return {"error": "No text response to parse."}
+        except Exception as e:
+            logger.error(f"[BatchMoogleSemanticSearch] Request error: {e}")
+            return {"error": str(e)}
+
+    @staticmethod
+    def _normalize_query(q: str) -> str:
+        s = (q or "").lower()
+        s = re.sub(r"[^a-z0-9\s]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    @staticmethod
+    def _jaccard_similarity(a: str, b: str, n: int = 3) -> float:
+        def ngrams(s: str, n: int) -> Set[str]:
+            if len(s) < n:
+                return {s}
+            return {s[i:i+n] for i in range(len(s)-n+1)}
+        A = ngrams(a, n)
+        B = ngrams(b, n)
+        if not A and not B:
+            return 1.0
+        inter = len(A & B)
+        union = len(A | B) or 1
+        return inter / union
+
+    def _is_novel(self, theorem_key: str, q_norm: str) -> bool:
+        min_novelty = float(SEARCH_CONFIG['novelty'].get('min_query_novelty', 0.15))
+        seen = self._seen_queries.get(theorem_key, [])
+        if not seen:
+            return True
+        # novelty ~ 1 - max_similarity
+        max_sim = 0.0
+        for prev in seen:
+            sim = self._jaccard_similarity(prev, q_norm, n=3)
+            if sim > max_sim:
+                max_sim = sim
+            if max_sim >= 1 - min_novelty:
+                break
+        novelty = 1.0 - max_sim
+        return novelty >= min_novelty
+
+    def _update_seen_queries(self, theorem_key: str, q_norms: List[str]) -> None:
+        cur = self._seen_queries.get(theorem_key, [])
+        cur.extend(q_norms)
+        # keep last 100 for memory bound
+        self._seen_queries[theorem_key] = cur[-100:]
+
+    def _collect_decls(self, items: List[dict]) -> Set[Tuple[str, str]]:
+        decls: Set[Tuple[str, str]] = set()
+        for it in items or []:
+            name = str(it.get('declarationName', '') or '')
+            path = str(it.get('mathlibPath', '') or '')
+            if name or path:
+                decls.add((name, path))
+        return decls
+
+    def _apply_rerank_and_trim(self, theorem_key: str, q: str, items: List[dict], batch_index: int, max_per_query: int) -> List[dict]:
+        if not isinstance(items, list) or not items:
+            return []
+        schedule = SEARCH_CONFIG['rerank'].get('max_per_query_schedule', [10, 6, 3])
+        # pick schedule value by batch index if available
+        scheduled_cap = schedule[batch_index] if batch_index < len(schedule) else schedule[-1]
+        cap = min(max_per_query or scheduled_cap, scheduled_cap)
+        enable_mmr = bool(SEARCH_CONFIG['rerank'].get('enable_mmr', True))
+        if not enable_mmr:
+            return items[:cap]
+        # Simple diversity heuristic: prefer unique mathlibPath then name
+        seen_paths: Set[str] = set()
+        seen_names: Set[str] = set()
+        diversified: List[dict] = []
+        for it in items:
+            path = it.get('mathlibPath') or ''
+            name = it.get('declarationName') or ''
+            key = (path, name)
+            if path in seen_paths and name in seen_names:
+                continue
+            seen_paths.add(path)
+            seen_names.add(name)
+            diversified.append(it)
+            if len(diversified) >= cap:
+                break
+        if len(diversified) < cap:
+            # top up with remaining items
+            for it in items:
+                if it not in diversified:
+                    diversified.append(it)
+                    if len(diversified) >= cap:
+                        break
+        return diversified[:cap]
+
+    def forward(self, theorem_key: str, queries: List[str], max_per_query: int = 10, max_batches_global: int = 4) -> dict:
+        logger.info(f"[BatchMoogleSemanticSearch] Starting batched search. Theorem={theorem_key}, Queries={len(queries)}, max_per_query={max_per_query}, max_batches_global={max_batches_global}")
+        if not isinstance(queries, list) or not queries or not isinstance(theorem_key, str) or not theorem_key:
+            return {"results": {}, "total_items": 0}
+
+        # Centralized caps from config
+        cfg_cap = int(SEARCH_CONFIG['caps'].get('max_batches_global_default', 2))
+        # Hard safety cap of 5 regardless of what the caller requests
+        effective_cap = min(max_batches_global or cfg_cap, cfg_cap, 5)
+        used = self._budget_usage.get(theorem_key, 0)
+        if used >= effective_cap:
+            logger.warning(f"[BatchMoogleSemanticSearch] Budget exhausted for theorem_key='{theorem_key}' (used={used} ≥ cap={max_batches_global})")
+            out = {"results": {}, "total_items": 0, "warning": "search_budget_exhausted"}
+            if SEARCH_CONFIG.get('finalize_hint', {}).get('enabled', True):
+                out["hint"] = "finalize_next_step"
+            return out
+
+        grouped: Dict[str, list] = {}
+        total_items = 0
+        # Prepare novelty filtering
+        norm_queries = [self._normalize_query(q) for q in queries]
+        kept_indices: List[int] = []
+        for idx, (q, qn) in enumerate(zip(queries, norm_queries)):
+            if self._is_novel(theorem_key, qn):
+                kept_indices.append(idx)
+            else:
+                logger.info(f"[BatchMoogleSemanticSearch] Skipping non-novel query: '{q}'")
+                grouped[q] = []
+        # If all queries are non-novel
+        if not kept_indices:
+            used_cap = used
+            logger.info(f"[BatchMoogleSemanticSearch] All queries non-novel for theorem_key='{theorem_key}'")
+            out = {"results": grouped, "total_items": 0, "warning": "not_novel"}
+            if SEARCH_CONFIG.get('finalize_hint', {}).get('enabled', True):
+                out["hint"] = "finalize_next_step"
+            return out
+
+        # Determine batch index for schedule
+        batch_index = used  # 0-based
+
+        for idx in kept_indices:
+            q = queries[idx]
+            qn = norm_queries[idx]
+            # Cache lookup
+            if q in self._cache:
+                items = list(self._cache[q])
+                logger.info(f"[BatchMoogleSemanticSearch] Cache hit for query '{q}' -> {len(items)} items")
+            else:
+                res = self._single_search(q)
+                items = res.get('data', []) if isinstance(res, dict) else []
+                # cache raw list (untrimmed) to allow different max_per_query later
+                self._cache[q] = list(items)
+            # Rerank and schedule-based trim
+            # prefer config default if max_per_query is None
+            mpq_default = int(SEARCH_CONFIG['caps'].get('max_per_query_default', 10))
+            eff_max_per_query = max_per_query if max_per_query is not None else mpq_default
+            items = self._apply_rerank_and_trim(theorem_key, q, items, batch_index, eff_max_per_query)
+            grouped[q] = items
+            total_items += len(items)
+
+        # Plateau detection
+        new_decls = set()
+        for lst in grouped.values():
+            new_decls |= self._collect_decls(lst)
+        seen_decls = self._seen_declarations.get(theorem_key, set())
+        added = new_decls - seen_decls
+        growth_ratio = (len(added) / max(1, len(new_decls))) if new_decls else 0.0
+        min_growth = float(SEARCH_CONFIG['plateau'].get('min_new_items_ratio', 0.05))
+        patience = int(SEARCH_CONFIG['plateau'].get('patience', 1))
+        streak = self._plateau_streak.get(theorem_key, 0)
+
+        plateau_triggered = False
+        if growth_ratio < min_growth:
+            streak += 1
+            self._plateau_streak[theorem_key] = streak
+            if streak >= patience:
+                plateau_triggered = True
+        else:
+            self._plateau_streak[theorem_key] = 0
+
+        # Update seen state
+        self._seen_declarations[theorem_key] = seen_decls | new_decls
+        self._update_seen_queries(theorem_key, [norm_queries[i] for i in kept_indices])
+
+        # Update budget
+        self._budget_usage[theorem_key] = used + 1
+
+        # Compose output
+        out: Dict[str, Any] = {"results": grouped, "total_items": total_items}
+        if plateau_triggered:
+            out["warning"] = "plateau_reached"
+        if SEARCH_CONFIG.get('finalize_hint', {}).get('enabled', True):
+            # Give a hint to finalize if budget low, plateau, or low novelty
+            if plateau_triggered or self._budget_usage[theorem_key] >= effective_cap:
+                out["hint"] = "finalize_next_step"
+
+        # Telemetry attributes
+        try:
+            with tracer.start_as_current_span(
+                "search_metrics",
+                attributes={
+                    "search.budget_used": self._budget_usage[theorem_key],
+                    "search.budget_cap": effective_cap,
+                    "search.kept_queries": len(kept_indices),
+                    "search.total_items": total_items,
+                    "search.growth_ratio": growth_ratio,
+                    "search.plateau_streak": self._plateau_streak.get(theorem_key, 0),
+                },
+            ):
+                pass
+        except Exception:
+            pass
+
+        logger.info(f"[BatchMoogleSemanticSearch] Finished batched search. Kept queries={len(kept_indices)} Total kept items={total_items}. Budget now used={self._budget_usage[theorem_key]}/{effective_cap}")
+        return out
+
 # Create an instance of the tool
 verify_lean_proof = VerifyLeanProof()
 
 # Register the tool instance
 moogle_semantic_search = MoogleSemanticSearch()
+
+# Batched search instance (preferred to reduce steps/tokens)
+batch_semantic_search = BatchMoogleSemanticSearch()
